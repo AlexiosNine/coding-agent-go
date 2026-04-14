@@ -3,6 +3,8 @@ package cc
 import (
 	"context"
 	"fmt"
+
+	"golang.org/x/sync/errgroup"
 )
 
 // Session holds the state for a single conversation.
@@ -72,12 +74,22 @@ func (s *Session) step(ctx context.Context) (*ChatResponse, error) {
 	})
 }
 
-// executeTools runs all tool calls from the LLM response.
+// executeTools runs all tool calls concurrently.
 func (s *Session) executeTools(ctx context.Context, toolUses []ToolUseContent) []ToolResultContent {
-	results := make([]ToolResultContent, 0, len(toolUses))
-	for _, tu := range toolUses {
-		results = append(results, s.executeSingleTool(ctx, tu))
+	results := make([]ToolResultContent, len(toolUses))
+
+	g, ctx := errgroup.WithContext(ctx)
+	if s.agent.maxConcurrency > 0 {
+		g.SetLimit(s.agent.maxConcurrency)
 	}
+
+	for i, tu := range toolUses {
+		g.Go(func() error {
+			results[i] = s.executeSingleTool(ctx, tu)
+			return nil
+		})
+	}
+	_ = g.Wait()
 	return results
 }
 

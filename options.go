@@ -50,3 +50,9 @@ func WithHooks(h Hooks) Option {
 func WithMemoryFactory(f func() Memory) Option {
 	return func(a *Agent) { a.memoryFactory = f }
 }
+
+// WithMaxConcurrency limits the number of tools that can execute in parallel.
+// Default is 0 (unlimited).
+func WithMaxConcurrency(n int) Option {
+	return func(a *Agent) { a.maxConcurrency = n }
+}

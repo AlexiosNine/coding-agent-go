@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
 
 	cc "github.com/alexioschen/cc-connect/goagent"
@@ -231,5 +232,57 @@ func TestAgent_Run_BackwardCompatible(t *testing.T) {
 	}
 	if result.Output != "OK" {
 		t.Errorf("expected 'OK', got %q", result.Output)
+	}
+}
+
+func TestSession_ConcurrentToolExecution(t *testing.T) {
+	provider := &mockProvider{
+		responses: []*cc.ChatResponse{
+			{
+				Content: []cc.Content{
+					cc.ToolUseContent{ID: "c1", Name: "slow", Input: json.RawMessage(`{"id":"1"}`)},
+					cc.ToolUseContent{ID: "c2", Name: "slow", Input: json.RawMessage(`{"id":"2"}`)},
+					cc.ToolUseContent{ID: "c3", Name: "slow", Input: json.RawMessage(`{"id":"3"}`)},
+				},
+				StopReason: "tool_use",
+				Usage:      cc.Usage{InputTokens: 10, OutputTokens: 5},
+			},
+			{
+				Content:    []cc.Content{cc.TextContent{Text: "All done"}},
+				StopReason: "end_turn",
+				Usage:      cc.Usage{InputTokens: 20, OutputTokens: 5},
+			},
+		},
+	}
+
+	var mu sync.Mutex
+	var order []string
+
+	slowTool := cc.NewFuncTool("slow", "Slow tool", func(_ context.Context, in struct {
+		ID string `json:"id"`
+	}) (string, error) {
+		mu.Lock()
+		order = append(order, in.ID)
+		mu.Unlock()
+		return "done-" + in.ID, nil
+	})
+
+	agent := cc.New(
+		cc.WithProvider(provider),
+		cc.WithModel("test"),
+		cc.WithTools(slowTool),
+	)
+
+	result, err := agent.NewSession().Run(context.Background(), "Run all")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Output != "All done" {
+		t.Errorf("expected 'All done', got %q", result.Output)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(order) != 3 {
+		t.Errorf("expected 3 tool executions, got %d", len(order))
 	}
 }

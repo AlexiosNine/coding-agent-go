@@ -10,14 +10,15 @@ const (
 // Agent is the core runtime that orchestrates LLM calls and tool execution.
 // Agent itself is stateless — conversation state lives in Session.
 type Agent struct {
-	provider      Provider
-	tools         map[string]Tool
-	system        string
-	model         string
-	maxTurns      int
-	maxTokens     int
-	hooks         Hooks
-	memoryFactory func() Memory
+	provider       Provider
+	tools          map[string]Tool
+	system         string
+	model          string
+	maxTurns       int
+	maxTokens      int
+	maxConcurrency int
+	hooks          Hooks
+	memoryFactory  func() Memory
 }
 
 // RunResult contains the outcome of an agent run.
