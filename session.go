@@ -11,8 +11,9 @@ import (
 // Session holds the state for a single conversation.
 // Create via Agent.NewSession().
 type Session struct {
-	agent  *Agent
-	memory Memory
+	agent          *Agent
+	memory         Memory
+	systemOverride string // if set, overrides agent.system for this session
 }
 
 // Run executes the agent loop within this session's conversation context.
@@ -25,6 +26,9 @@ func (s *Session) Run(ctx context.Context, input string) (*RunResult, error) {
 	}
 
 	s.memory.Add(NewUserMessage(input))
+
+	// Track this session as parent for sub-agents
+	ctx = withParentSession(ctx, s)
 
 	var totalUsage Usage
 
@@ -66,9 +70,14 @@ func (s *Session) Run(ctx context.Context, input string) (*RunResult, error) {
 
 // step makes a single LLM call, with retry if configured.
 func (s *Session) step(ctx context.Context) (*ChatResponse, error) {
+	system := s.agent.system
+	if s.systemOverride != "" {
+		system = s.systemOverride
+	}
+
 	params := ChatParams{
 		Model:     s.agent.model,
-		System:    s.agent.system,
+		System:    system,
 		Messages:  s.memory.Messages(),
 		Tools:     s.agent.toolDefs(),
 		MaxTokens: s.agent.maxTokens,
@@ -189,9 +198,14 @@ func (s *Session) RunStream(ctx context.Context, input string) (<-chan StreamEve
 
 // streamStep attempts to stream from the provider, falling back to Chat().
 func (s *Session) streamStep(ctx context.Context, out chan<- StreamEvent) (*ChatResponse, error) {
+	system := s.agent.system
+	if s.systemOverride != "" {
+		system = s.systemOverride
+	}
+
 	params := ChatParams{
 		Model:     s.agent.model,
-		System:    s.agent.system,
+		System:    system,
 		Messages:  s.memory.Messages(),
 		Tools:     s.agent.toolDefs(),
 		MaxTokens: s.agent.maxTokens,

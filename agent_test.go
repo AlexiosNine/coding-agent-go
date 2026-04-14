@@ -558,3 +558,80 @@ func TestAsAgentTool_EmptyTask(t *testing.T) {
 		t.Error("expected error for empty task")
 	}
 }
+
+func TestAsAgentTool_StructuredResult(t *testing.T) {
+	subProvider := &mockProvider{
+		responses: []*cc.ChatResponse{
+			{Content: []cc.Content{cc.TextContent{Text: "result data"}}, StopReason: "end_turn", Usage: cc.Usage{InputTokens: 10, OutputTokens: 5}},
+		},
+	}
+	subAgent := cc.New(cc.WithProvider(subProvider), cc.WithModel("sub"))
+	tool := cc.AsAgentTool("worker", "a worker", subAgent)
+
+	output, err := tool.Execute(context.Background(), json.RawMessage(`{"task":"do work"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Output should be structured JSON
+	var result cc.AgentToolResult
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatalf("expected JSON output, got: %s", output)
+	}
+	if result.Output != "result data" {
+		t.Errorf("expected output 'result data', got %q", result.Output)
+	}
+	if result.Turns != 1 {
+		t.Errorf("expected 1 turn, got %d", result.Turns)
+	}
+}
+
+func TestAsAgentTool_ContextPassthrough(t *testing.T) {
+	// Sub-agent receives context from parent LLM via the "context" field
+	subProvider := &mockProvider{
+		responses: []*cc.ChatResponse{
+			{Content: []cc.Content{cc.TextContent{Text: "Got the context"}}, StopReason: "end_turn", Usage: cc.Usage{InputTokens: 10, OutputTokens: 5}},
+		},
+	}
+	subAgent := cc.New(cc.WithProvider(subProvider), cc.WithModel("sub"))
+	tool := cc.AsAgentTool("worker", "a worker", subAgent)
+
+	output, err := tool.Execute(context.Background(), json.RawMessage(`{"task":"summarize","context":"The user asked about Go concurrency"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var result cc.AgentToolResult
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatalf("expected JSON output, got: %s", output)
+	}
+	if result.Output != "Got the context" {
+		t.Errorf("expected 'Got the context', got %q", result.Output)
+	}
+}
+
+func TestSharedState(t *testing.T) {
+	state := cc.NewSharedState()
+	state.Set("key1", "value1")
+	state.Set("count", 42)
+
+	if state.GetString("key1") != "value1" {
+		t.Errorf("expected 'value1', got %q", state.GetString("key1"))
+	}
+	if state.Get("count") != 42 {
+		t.Errorf("expected 42, got %v", state.Get("count"))
+	}
+	if state.GetString("missing") != "" {
+		t.Errorf("expected empty string for missing key")
+	}
+
+	// Test context propagation
+	ctx := cc.WithSharedState(context.Background(), state)
+	retrieved := cc.GetSharedState(ctx)
+	if retrieved == nil {
+		t.Fatal("expected shared state from context")
+	}
+	if retrieved.GetString("key1") != "value1" {
+		t.Errorf("expected 'value1' from context state")
+	}
+}
