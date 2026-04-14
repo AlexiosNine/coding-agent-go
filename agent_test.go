@@ -483,3 +483,78 @@ func TestSession_RunStream(t *testing.T) {
 		t.Errorf("expected message_stop, got %+v", events[1])
 	}
 }
+
+func TestAsAgentTool_LLMDriven(t *testing.T) {
+	// Sub-agent: always responds with "42"
+	subProvider := &mockProvider{
+		responses: []*cc.ChatResponse{
+			{Content: []cc.Content{cc.TextContent{Text: "42"}}, StopReason: "end_turn", Usage: cc.Usage{InputTokens: 5, OutputTokens: 2}},
+		},
+	}
+	subAgent := cc.New(cc.WithProvider(subProvider), cc.WithModel("sub"))
+
+	// Parent agent: first call returns tool_use for "calc", second call returns final text
+	parentProvider := &mockProvider{
+		responses: []*cc.ChatResponse{
+			{
+				Content: []cc.Content{
+					cc.ToolUseContent{ID: "call_1", Name: "calc", Input: json.RawMessage(`{"task":"compute 6*7"}`)},
+				},
+				StopReason: "tool_use",
+				Usage:      cc.Usage{InputTokens: 10, OutputTokens: 5},
+			},
+			{
+				Content:    []cc.Content{cc.TextContent{Text: "The answer is 42"}},
+				StopReason: "end_turn",
+				Usage:      cc.Usage{InputTokens: 15, OutputTokens: 5},
+			},
+		},
+	}
+
+	agent := cc.New(
+		cc.WithProvider(parentProvider),
+		cc.WithModel("parent"),
+		cc.WithTools(cc.AsAgentTool("calc", "A calculator sub-agent", subAgent)),
+	)
+
+	result, err := agent.Run(context.Background(), "What is 6*7?")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Output != "The answer is 42" {
+		t.Errorf("expected 'The answer is 42', got %q", result.Output)
+	}
+	if result.Turns != 2 {
+		t.Errorf("expected 2 turns, got %d", result.Turns)
+	}
+}
+
+func TestAsAgentTool_CodeDriven(t *testing.T) {
+	// Direct code-level invocation of sub-agent
+	subProvider := &mockProvider{
+		responses: []*cc.ChatResponse{
+			{Content: []cc.Content{cc.TextContent{Text: "Research complete: Go is great"}}, StopReason: "end_turn", Usage: cc.Usage{InputTokens: 10, OutputTokens: 8}},
+		},
+	}
+	subAgent := cc.New(cc.WithProvider(subProvider), cc.WithModel("sub"), cc.WithSystem("You are a researcher"))
+
+	result, err := subAgent.Run(context.Background(), "Tell me about Go")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Output != "Research complete: Go is great" {
+		t.Errorf("expected 'Research complete: Go is great', got %q", result.Output)
+	}
+}
+
+func TestAsAgentTool_EmptyTask(t *testing.T) {
+	subAgent := cc.New(cc.WithProvider(&mockProvider{
+		responses: []*cc.ChatResponse{{Content: []cc.Content{cc.TextContent{Text: "ok"}}, StopReason: "end_turn"}},
+	}))
+
+	tool := cc.AsAgentTool("test", "test agent", subAgent)
+	_, err := tool.Execute(context.Background(), json.RawMessage(`{"task":""}`))
+	if err == nil {
+		t.Error("expected error for empty task")
+	}
+}
