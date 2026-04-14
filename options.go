@@ -1,5 +1,12 @@
 package cc
 
+import (
+	"context"
+	"fmt"
+
+	"github.com/alexioschen/cc-connect/goagent/mcp"
+)
+
 // Option configures an Agent.
 type Option func(*Agent)
 
@@ -68,5 +75,47 @@ func WithMaxRetries(n int) Option {
 		cfg := DefaultRetryConfig()
 		cfg.MaxRetries = n
 		a.retry = &cfg
+	}
+}
+
+// WithMCPServer connects to an MCP Server via stdio transport.
+// It starts the subprocess, initializes the MCP connection, discovers tools,
+// and registers them with the agent. Call Agent.Close() to shut down.
+func WithMCPServer(command string, args ...string) Option {
+	return func(a *Agent) {
+		transport, err := mcp.NewStdioTransport(command, args...)
+		if err != nil {
+			panic(fmt.Sprintf("mcp: start server %q: %v", command, err))
+		}
+
+		client := mcp.NewClient(transport, mcp.ClientInfo{Name: "goagent", Version: "1.0.0"})
+
+		ctx := context.Background()
+		if _, err := client.Initialize(ctx); err != nil {
+			_ = client.Close()
+			panic(fmt.Sprintf("mcp: initialize %q: %v", command, err))
+		}
+
+		tools, err := client.ListTools(ctx)
+		if err != nil {
+			_ = client.Close()
+			panic(fmt.Sprintf("mcp: list tools %q: %v", command, err))
+		}
+
+		for _, info := range tools {
+			a.tools[info.Name] = mcp.NewMCPTool(client, info)
+		}
+		a.closers = append(a.closers, client)
+	}
+}
+
+// WithMCPClient registers a pre-configured MCP Client's tools with the agent.
+// The caller must have already called client.Initialize() and client.ListTools().
+func WithMCPClient(client *mcp.Client, tools []mcp.ToolInfo) Option {
+	return func(a *Agent) {
+		for _, info := range tools {
+			a.tools[info.Name] = mcp.NewMCPTool(client, info)
+		}
+		a.closers = append(a.closers, client)
 	}
 }

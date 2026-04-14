@@ -1,6 +1,9 @@
 package cc
 
-import "context"
+import (
+	"context"
+	"io"
+)
 
 const (
 	defaultMaxTurns  = 10
@@ -20,6 +23,7 @@ type Agent struct {
 	retry          *RetryConfig
 	hooks          Hooks
 	memoryFactory  func() Memory
+	closers        []io.Closer // MCP clients and other resources to clean up
 }
 
 // RunResult contains the outcome of an agent run.
@@ -82,4 +86,15 @@ func (a *Agent) toolDefs() []ToolDef {
 		})
 	}
 	return defs
+}
+
+// Close shuts down all MCP clients and other resources.
+func (a *Agent) Close() error {
+	var firstErr error
+	for _, c := range a.closers {
+		if err := c.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
