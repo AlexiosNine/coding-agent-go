@@ -388,3 +388,98 @@ func TestSession_NoRetryOnAuthError(t *testing.T) {
 		t.Errorf("expected 1 call, got %d", callCount)
 	}
 }
+
+func TestStreamReader_Collect(t *testing.T) {
+	reader, ch := cc.NewStreamReader(10, nil)
+
+	go func() {
+		ch <- cc.StreamEvent{Type: "text_delta", Text: "Hello "}
+		ch <- cc.StreamEvent{Type: "text_delta", Text: "world"}
+		ch <- cc.StreamEvent{Type: "message_stop", Usage: cc.Usage{InputTokens: 10, OutputTokens: 5}}
+		close(ch)
+	}()
+
+	resp, err := reader.Collect()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Text() != "Hello world" {
+		t.Errorf("expected 'Hello world', got %q", resp.Text())
+	}
+	if resp.StopReason != "end_turn" {
+		t.Errorf("expected 'end_turn', got %q", resp.StopReason)
+	}
+}
+
+func TestStreamReader_CollectWithToolUse(t *testing.T) {
+	reader, ch := cc.NewStreamReader(10, nil)
+
+	go func() {
+		ch <- cc.StreamEvent{Type: "text_delta", Text: "Let me check"}
+		ch <- cc.StreamEvent{Type: "tool_use", ToolUse: &cc.ToolUseContent{
+			ID: "call_1", Name: "shell", Input: json.RawMessage(`{"command":"date"}`),
+		}}
+		ch <- cc.StreamEvent{Type: "message_stop", Usage: cc.Usage{InputTokens: 10, OutputTokens: 8}}
+		close(ch)
+	}()
+
+	resp, err := reader.Collect()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.StopReason != "tool_use" {
+		t.Errorf("expected 'tool_use', got %q", resp.StopReason)
+	}
+	if len(resp.ToolUses()) != 1 {
+		t.Errorf("expected 1 tool use, got %d", len(resp.ToolUses()))
+	}
+}
+
+func TestStreamReader_Close(t *testing.T) {
+	cancelled := false
+	reader, ch := cc.NewStreamReader(10, func() { cancelled = true })
+
+	go func() {
+		ch <- cc.StreamEvent{Type: "text_delta", Text: "partial"}
+		close(ch)
+	}()
+
+	err := reader.Close()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cancelled {
+		t.Error("expected cancel to be called")
+	}
+}
+
+func TestSession_RunStream(t *testing.T) {
+	provider := &mockProvider{
+		responses: []*cc.ChatResponse{
+			{Content: []cc.Content{cc.TextContent{Text: "Streamed!"}}, StopReason: "end_turn", Usage: cc.Usage{InputTokens: 10, OutputTokens: 5}},
+		},
+	}
+
+	agent := cc.New(cc.WithProvider(provider), cc.WithModel("test"))
+	session := agent.NewSession()
+
+	ch, err := session.RunStream(context.Background(), "Hello")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var events []cc.StreamEvent
+	for ev := range ch {
+		events = append(events, ev)
+	}
+
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(events))
+	}
+	if events[0].Type != "text_delta" || events[0].Text != "Streamed!" {
+		t.Errorf("expected text_delta 'Streamed!', got %+v", events[0])
+	}
+	if events[1].Type != "message_stop" {
+		t.Errorf("expected message_stop, got %+v", events[1])
+	}
+}

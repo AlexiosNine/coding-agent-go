@@ -34,6 +34,7 @@ func main() {
 	system := flag.String("system", "You are a helpful assistant with access to tools.", "System prompt")
 	maxTurns := flag.Int("max-turns", 10, "Maximum agent loop turns")
 	noTools := flag.Bool("no-tools", false, "Disable built-in tools")
+	streamMode := flag.Bool("stream", false, "Enable streaming output")
 	flag.Parse()
 
 	provider, err := buildProvider(*providerName)
@@ -72,7 +73,7 @@ func main() {
 	}
 
 	// Interactive REPL mode
-	runREPL(agent)
+	runREPL(agent, *streamMode)
 }
 
 func runOnce(agent *cc.Agent, query string) {
@@ -87,7 +88,7 @@ func runOnce(agent *cc.Agent, query string) {
 	fmt.Println(result.Output)
 }
 
-func runREPL(agent *cc.Agent) {
+func runREPL(agent *cc.Agent, stream bool) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
@@ -113,13 +114,32 @@ func runREPL(agent *cc.Agent) {
 			continue
 		}
 
-		result, err := session.Run(ctx, input)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %s\n", err)
-			continue
+		if stream {
+			ch, err := session.RunStream(ctx, input)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+				continue
+			}
+			fmt.Println()
+			for ev := range ch {
+				switch ev.Type {
+				case "text_delta":
+					fmt.Print(ev.Text)
+				case "error":
+					fmt.Fprintf(os.Stderr, "\nError: %s\n", ev.Error)
+				case "message_stop":
+					fmt.Printf("\n[tokens: %d in / %d out]\n", ev.Usage.InputTokens, ev.Usage.OutputTokens)
+				}
+			}
+		} else {
+			result, err := session.Run(ctx, input)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+				continue
+			}
+			fmt.Printf("\n%s\n", result.Output)
+			fmt.Printf("[turns: %d | tokens: %d in / %d out]\n", result.Turns, result.Usage.InputTokens, result.Usage.OutputTokens)
 		}
-		fmt.Printf("\n%s\n", result.Output)
-		fmt.Printf("[turns: %d | tokens: %d in / %d out]\n", result.Turns, result.Usage.InputTokens, result.Usage.OutputTokens)
 	}
 }
 

@@ -3,6 +3,7 @@ package cc
 import (
 	"context"
 	"fmt"
+	"io"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -138,4 +139,121 @@ func (s *Session) Messages() []Message {
 // ClearMemory resets the session's conversation history.
 func (s *Session) ClearMemory() {
 	s.memory.Clear()
+}
+
+// RunStream executes the agent loop with streaming output.
+// If the provider implements StreamProvider, tokens are streamed as they arrive.
+// Otherwise, falls back to Chat() and emits the complete response as events.
+func (s *Session) RunStream(ctx context.Context, input string) (<-chan StreamEvent, error) {
+	if input == "" {
+		return nil, ErrEmptyInput
+	}
+	if s.agent.provider == nil {
+		return nil, ErrNoProvider
+	}
+
+	out := make(chan StreamEvent, 64)
+
+	go func() {
+		defer close(out)
+		s.memory.Add(NewUserMessage(input))
+
+		for turn := range s.agent.maxTurns {
+			resp, err := s.streamStep(ctx, out)
+			if err != nil {
+				out <- StreamEvent{Type: "error", Error: fmt.Errorf("turn %d: %w", turn+1, err)}
+				return
+			}
+
+			if s.agent.hooks.OnModelResponse != nil {
+				s.agent.hooks.OnModelResponse(ctx, resp)
+			}
+
+			s.memory.Add(Message{Role: RoleAssistant, Content: resp.Content})
+
+			toolUses := resp.ToolUses()
+			if len(toolUses) == 0 {
+				out <- StreamEvent{Type: "message_stop", Usage: resp.Usage}
+				return
+			}
+
+			results := s.executeTools(ctx, toolUses)
+			s.memory.Add(NewToolResultMessage(results...))
+		}
+
+		out <- StreamEvent{Type: "error", Error: ErrMaxTurns}
+	}()
+
+	return out, nil
+}
+
+// streamStep attempts to stream from the provider, falling back to Chat().
+func (s *Session) streamStep(ctx context.Context, out chan<- StreamEvent) (*ChatResponse, error) {
+	params := ChatParams{
+		Model:     s.agent.model,
+		System:    s.agent.system,
+		Messages:  s.memory.Messages(),
+		Tools:     s.agent.toolDefs(),
+		MaxTokens: s.agent.maxTokens,
+	}
+
+	if sp, ok := s.agent.provider.(StreamProvider); ok {
+		reader, err := sp.Stream(ctx, params)
+		if err != nil {
+			return nil, err
+		}
+
+		var contents []Content
+		var usage Usage
+		var hasToolUse bool
+		for {
+			ev, err := reader.Next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return nil, err
+			}
+			out <- ev
+
+			switch ev.Type {
+			case "text_delta":
+				if len(contents) == 0 {
+					contents = append(contents, TextContent{})
+				}
+				if tc, ok := contents[len(contents)-1].(TextContent); ok {
+					contents[len(contents)-1] = TextContent{Text: tc.Text + ev.Text}
+				}
+			case "tool_use":
+				if ev.ToolUse != nil {
+					hasToolUse = true
+					contents = append(contents, *ev.ToolUse)
+				}
+			case "message_stop":
+				usage = ev.Usage
+			}
+		}
+
+		stopReason := "end_turn"
+		if hasToolUse {
+			stopReason = "tool_use"
+		}
+		return &ChatResponse{Content: contents, StopReason: stopReason, Usage: usage}, nil
+	}
+
+	// Fallback: use Chat() and emit as single event
+	resp, err := s.agent.provider.Chat(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+
+	text := resp.Text()
+	if text != "" {
+		out <- StreamEvent{Type: "text_delta", Text: text}
+	}
+	for _, tu := range resp.ToolUses() {
+		out <- StreamEvent{Type: "tool_use", ToolUse: &tu}
+	}
+
+	return resp, nil
 }

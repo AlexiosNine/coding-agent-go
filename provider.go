@@ -67,3 +67,9 @@ func (r *ChatResponse) HasToolUse() bool {
 	}
 	return false
 }
+
+// StreamProvider is optionally implemented by providers that support streaming.
+type StreamProvider interface {
+	Provider
+	Stream(ctx context.Context, params ChatParams) (*StreamReader, error)
+}
