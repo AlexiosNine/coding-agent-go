@@ -163,3 +163,73 @@ func TestAgent_Run_NoProvider(t *testing.T) {
 		t.Errorf("expected ErrNoProvider, got %v", err)
 	}
 }
+
+func TestSession_IndependentMemory(t *testing.T) {
+	provider := &mockProvider{
+		responses: []*cc.ChatResponse{
+			{Content: []cc.Content{cc.TextContent{Text: "Reply A"}}, StopReason: "end_turn", Usage: cc.Usage{InputTokens: 5, OutputTokens: 3}},
+			{Content: []cc.Content{cc.TextContent{Text: "Reply B"}}, StopReason: "end_turn", Usage: cc.Usage{InputTokens: 5, OutputTokens: 3}},
+		},
+	}
+
+	agent := cc.New(cc.WithProvider(provider), cc.WithModel("test"))
+
+	s1 := agent.NewSession()
+	s2 := agent.NewSession()
+
+	_, err := s1.Run(context.Background(), "Hello from S1")
+	if err != nil {
+		t.Fatalf("s1.Run: %v", err)
+	}
+	_, err = s2.Run(context.Background(), "Hello from S2")
+	if err != nil {
+		t.Fatalf("s2.Run: %v", err)
+	}
+
+	if len(s1.Messages()) != 2 {
+		t.Errorf("s1 expected 2 messages, got %d", len(s1.Messages()))
+	}
+	if len(s2.Messages()) != 2 {
+		t.Errorf("s2 expected 2 messages, got %d", len(s2.Messages()))
+	}
+	if s1.Messages()[0].Text() == s2.Messages()[0].Text() {
+		t.Error("sessions should have independent messages")
+	}
+}
+
+func TestSession_ClearMemory(t *testing.T) {
+	provider := &mockProvider{
+		responses: []*cc.ChatResponse{
+			{Content: []cc.Content{cc.TextContent{Text: "Hi"}}, StopReason: "end_turn", Usage: cc.Usage{InputTokens: 5, OutputTokens: 3}},
+		},
+	}
+	agent := cc.New(cc.WithProvider(provider), cc.WithModel("test"))
+	s := agent.NewSession()
+
+	_, _ = s.Run(context.Background(), "Hello")
+	if len(s.Messages()) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(s.Messages()))
+	}
+
+	s.ClearMemory()
+	if len(s.Messages()) != 0 {
+		t.Errorf("expected 0 messages after clear, got %d", len(s.Messages()))
+	}
+}
+
+func TestAgent_Run_BackwardCompatible(t *testing.T) {
+	provider := &mockProvider{
+		responses: []*cc.ChatResponse{
+			{Content: []cc.Content{cc.TextContent{Text: "OK"}}, StopReason: "end_turn", Usage: cc.Usage{InputTokens: 5, OutputTokens: 2}},
+		},
+	}
+	agent := cc.New(cc.WithProvider(provider), cc.WithModel("test"))
+
+	result, err := agent.Run(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Output != "OK" {
+		t.Errorf("expected 'OK', got %q", result.Output)
+	}
+}

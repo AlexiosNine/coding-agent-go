@@ -45,8 +45,8 @@ func WithHooks(h Hooks) Option {
 	return func(a *Agent) { a.hooks = h }
 }
 
-// WithMemory sets the memory implementation for conversation history.
-// Default is an unbounded buffer memory.
-func WithMemory(m Memory) Option {
-	return func(a *Agent) { a.memory = m }
+// WithMemoryFactory sets the factory function used to create per-session memory.
+// Default creates an unbounded BufferMemory.
+func WithMemoryFactory(f func() Memory) Option {
+	return func(a *Agent) { a.memoryFactory = f }
 }

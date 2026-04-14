@@ -91,6 +91,7 @@ func runREPL(agent *cc.Agent) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
+	session := agent.NewSession()
 	scanner := bufio.NewScanner(os.Stdin)
 	fmt.Println("cc-connect agent (type 'exit' to quit)")
 
@@ -107,12 +108,12 @@ func runREPL(agent *cc.Agent) {
 			break
 		}
 		if input == "/clear" {
-			agent.ClearMemory()
+			session.ClearMemory()
 			fmt.Println("Memory cleared.")
 			continue
 		}
 
-		result, err := agent.Run(ctx, input)
+		result, err := session.Run(ctx, input)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 			continue
