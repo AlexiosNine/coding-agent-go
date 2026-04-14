@@ -63,15 +63,27 @@ func (s *Session) Run(ctx context.Context, input string) (*RunResult, error) {
 	}, ErrMaxTurns
 }
 
-// step makes a single LLM call with the current conversation state.
+// step makes a single LLM call, with retry if configured.
 func (s *Session) step(ctx context.Context) (*ChatResponse, error) {
-	return s.agent.provider.Chat(ctx, ChatParams{
+	params := ChatParams{
 		Model:     s.agent.model,
 		System:    s.agent.system,
 		Messages:  s.memory.Messages(),
 		Tools:     s.agent.toolDefs(),
 		MaxTokens: s.agent.maxTokens,
+	}
+
+	if s.agent.retry == nil {
+		return s.agent.provider.Chat(ctx, params)
+	}
+
+	var resp *ChatResponse
+	err := retry(ctx, *s.agent.retry, func() error {
+		var callErr error
+		resp, callErr = s.agent.provider.Chat(ctx, params)
+		return callErr
 	})
+	return resp, err
 }
 
 // executeTools runs all tool calls concurrently.

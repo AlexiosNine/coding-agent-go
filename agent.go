@@ -17,6 +17,7 @@ type Agent struct {
 	maxTurns       int
 	maxTokens      int
 	maxConcurrency int
+	retry          *RetryConfig
 	hooks          Hooks
 	memoryFactory  func() Memory
 }

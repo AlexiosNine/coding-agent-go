@@ -56,3 +56,17 @@ func WithMemoryFactory(f func() Memory) Option {
 func WithMaxConcurrency(n int) Option {
 	return func(a *Agent) { a.maxConcurrency = n }
 }
+
+// WithRetry sets the retry configuration for provider calls.
+func WithRetry(cfg RetryConfig) Option {
+	return func(a *Agent) { a.retry = &cfg }
+}
+
+// WithMaxRetries enables retry with the given max attempts and default delays.
+func WithMaxRetries(n int) Option {
+	return func(a *Agent) {
+		cfg := DefaultRetryConfig()
+		cfg.MaxRetries = n
+		a.retry = &cfg
+	}
+}

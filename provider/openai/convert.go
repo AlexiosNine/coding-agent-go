@@ -2,6 +2,8 @@ package openai
 
 import (
 	"encoding/json"
+	"strconv"
+	"time"
 
 	cc "github.com/alexioschen/cc-connect/goagent"
 )
@@ -159,4 +161,15 @@ func fromAPIResponse(resp apiResponse) *cc.ChatResponse {
 			OutputTokens: resp.Usage.CompletionTokens,
 		},
 	}
+}
+
+// parseRetryAfter parses the Retry-After header value.
+func parseRetryAfter(val string) time.Duration {
+	if val == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(val); err == nil {
+		return time.Duration(secs) * time.Second
+	}
+	return 0
 }

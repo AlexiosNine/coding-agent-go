@@ -84,7 +84,17 @@ func (p *Provider) Chat(ctx context.Context, params cc.ChatParams) (*cc.ChatResp
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%w: status %d: %s", cc.ErrProviderRequest, resp.StatusCode, string(respBody))
+		errType, retryable := cc.ClassifyHTTPStatus(resp.StatusCode)
+		retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
+		return nil, &cc.ProviderError{
+			Provider:   "openai",
+			StatusCode: resp.StatusCode,
+			Type:       errType,
+			Message:    string(respBody),
+			Retryable:  retryable,
+			RetryAfter: retryAfter,
+			Err:        cc.ErrProviderRequest,
+		}
 	}
 
 	var apiResp apiResponse

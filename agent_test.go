@@ -6,6 +6,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	cc "github.com/alexioschen/cc-connect/goagent"
 )
@@ -284,5 +285,106 @@ func TestSession_ConcurrentToolExecution(t *testing.T) {
 	defer mu.Unlock()
 	if len(order) != 3 {
 		t.Errorf("expected 3 tool executions, got %d", len(order))
+	}
+}
+
+func TestProviderError_IsRetryable(t *testing.T) {
+	retryable := &cc.ProviderError{
+		Provider: "test", StatusCode: 429, Type: "rate_limit",
+		Message: "too many requests", Retryable: true,
+	}
+	if !cc.IsRetryable(retryable) {
+		t.Error("expected 429 to be retryable")
+	}
+	if !cc.IsRateLimited(retryable) {
+		t.Error("expected 429 to be rate limited")
+	}
+
+	notRetryable := &cc.ProviderError{
+		Provider: "test", StatusCode: 401, Type: "auth",
+		Message: "unauthorized", Retryable: false,
+	}
+	if cc.IsRetryable(notRetryable) {
+		t.Error("expected 401 to not be retryable")
+	}
+	if cc.IsRateLimited(notRetryable) {
+		t.Error("expected 401 to not be rate limited")
+	}
+
+	if cc.IsRetryable(errors.New("random error")) {
+		t.Error("expected non-ProviderError to not be retryable")
+	}
+}
+
+// errorThenSuccessProvider returns errors for the first N calls, then succeeds.
+type errorThenSuccessProvider struct {
+	errors    []error
+	success   *cc.ChatResponse
+	callCount *int
+}
+
+func (p *errorThenSuccessProvider) Chat(_ context.Context, _ cc.ChatParams) (*cc.ChatResponse, error) {
+	*p.callCount++
+	idx := *p.callCount - 1
+	if idx < len(p.errors) {
+		return nil, p.errors[idx]
+	}
+	return p.success, nil
+}
+
+func TestSession_RetryOnRateLimit(t *testing.T) {
+	callCount := 0
+	provider := &errorThenSuccessProvider{
+		errors: []error{
+			&cc.ProviderError{Provider: "test", StatusCode: 429, Type: "rate_limit", Message: "rate limited", Retryable: true},
+			&cc.ProviderError{Provider: "test", StatusCode: 503, Type: "server", Message: "unavailable", Retryable: true},
+		},
+		success: &cc.ChatResponse{
+			Content: []cc.Content{cc.TextContent{Text: "Finally!"}}, StopReason: "end_turn",
+			Usage: cc.Usage{InputTokens: 10, OutputTokens: 5},
+		},
+		callCount: &callCount,
+	}
+
+	agent := cc.New(
+		cc.WithProvider(provider),
+		cc.WithModel("test"),
+		cc.WithRetry(cc.RetryConfig{MaxRetries: 3, InitDelay: time.Millisecond, MaxDelay: 10 * time.Millisecond}),
+	)
+
+	result, err := agent.Run(context.Background(), "retry me")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Output != "Finally!" {
+		t.Errorf("expected 'Finally!', got %q", result.Output)
+	}
+	if callCount != 3 {
+		t.Errorf("expected 3 calls, got %d", callCount)
+	}
+}
+
+func TestSession_NoRetryOnAuthError(t *testing.T) {
+	callCount := 0
+	provider := &errorThenSuccessProvider{
+		errors: []error{
+			&cc.ProviderError{Provider: "test", StatusCode: 401, Type: "auth", Message: "unauthorized", Retryable: false},
+		},
+		success:   nil,
+		callCount: &callCount,
+	}
+
+	agent := cc.New(
+		cc.WithProvider(provider),
+		cc.WithModel("test"),
+		cc.WithRetry(cc.RetryConfig{MaxRetries: 3, InitDelay: time.Millisecond, MaxDelay: 10 * time.Millisecond}),
+	)
+
+	_, err := agent.Run(context.Background(), "fail me")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if callCount != 1 {
+		t.Errorf("expected 1 call, got %d", callCount)
 	}
 }
