@@ -21,6 +21,8 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
+	"syscall"
 
 	cc "github.com/alexioschen/cc-connect/goagent"
 	"github.com/alexioschen/cc-connect/goagent/provider/anthropic"
@@ -35,6 +37,7 @@ func main() {
 	maxTurns := flag.Int("max-turns", 10, "Maximum agent loop turns")
 	noTools := flag.Bool("no-tools", false, "Disable built-in tools")
 	streamMode := flag.Bool("stream", false, "Enable streaming output")
+	approvalMode := flag.String("approval", "auto", "Tool approval mode: auto, interactive, or pattern")
 	flag.Parse()
 
 	provider, err := buildProvider(*providerName)
@@ -52,6 +55,20 @@ func main() {
 		cc.WithModel(*model),
 		cc.WithSystem(*system),
 		cc.WithMaxTurns(*maxTurns),
+	}
+
+	// Set approval mode
+	switch *approvalMode {
+	case "auto":
+		opts = append(opts, cc.WithAutoApprove())
+	case "interactive":
+		opts = append(opts, cc.WithInteractiveApprove())
+	case "pattern":
+		// Auto-approve read-only tools, prompt for others
+		opts = append(opts, cc.WithPatternApprove([]string{"shell_read", "read_file", "http_get"}))
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown approval mode: %s\n", *approvalMode)
+		os.Exit(1)
 	}
 
 	if !*noTools {
@@ -89,14 +106,35 @@ func runOnce(agent *cc.Agent, query string) {
 }
 
 func runREPL(agent *cc.Agent, stream bool) {
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	// Double Ctrl+C pattern: first cancels current operation, second exits
+	var interruptCount atomic.Int32
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		for range sigCh {
+			count := interruptCount.Add(1)
+			if count == 1 {
+				fmt.Fprintln(os.Stderr, "\n^C (interrupt: cancelling current operation, press again to exit)")
+				cancel()
+			} else {
+				fmt.Fprintln(os.Stderr, "\n^C (exiting)")
+				os.Exit(0)
+			}
+		}
+	}()
 
 	session := agent.NewSession()
 	scanner := bufio.NewScanner(os.Stdin)
-	fmt.Println("cc-connect agent (type 'exit' to quit)")
+	fmt.Println("cc-connect agent (type 'exit' to quit, Ctrl+C twice to force exit)")
 
 	for {
+		// Reset interrupt count and context for each new input
+		interruptCount.Store(0)
+		ctx, cancel = context.WithCancel(context.Background())
+
 		fmt.Print("\n> ")
 		if !scanner.Scan() {
 			break
@@ -126,7 +164,11 @@ func runREPL(agent *cc.Agent, stream bool) {
 				case "text_delta":
 					fmt.Print(ev.Text)
 				case "error":
-					fmt.Fprintf(os.Stderr, "\nError: %s\n", ev.Error)
+					if ev.Error == context.Canceled {
+						fmt.Fprintln(os.Stderr, "\n[cancelled]")
+					} else {
+						fmt.Fprintf(os.Stderr, "\nError: %s\n", ev.Error)
+					}
 				case "message_stop":
 					fmt.Printf("\n[tokens: %d in / %d out]\n", ev.Usage.InputTokens, ev.Usage.OutputTokens)
 				}
@@ -134,13 +176,18 @@ func runREPL(agent *cc.Agent, stream bool) {
 		} else {
 			result, err := session.Run(ctx, input)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+				if err == context.Canceled {
+					fmt.Fprintln(os.Stderr, "[cancelled]")
+				} else {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+				}
 				continue
 			}
 			fmt.Printf("\n%s\n", result.Output)
 			fmt.Printf("[turns: %d | tokens: %d in / %d out]\n", result.Turns, result.Usage.InputTokens, result.Usage.OutputTokens)
 		}
 	}
+	cancel()
 }
 
 func buildProvider(name string) (cc.Provider, error) {

@@ -23,7 +23,8 @@ type Agent struct {
 	retry          *RetryConfig
 	hooks          Hooks
 	memoryFactory  func() Memory
-	closers        []io.Closer // MCP clients and other resources to clean up
+	approver       Approver        // tool approval strategy
+	closers        []io.Closer     // MCP clients and other resources to clean up
 }
 
 // RunResult contains the outcome of an agent run.

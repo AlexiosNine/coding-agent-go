@@ -119,3 +119,27 @@ func WithMCPClient(client *mcp.Client, tools []mcp.ToolInfo) Option {
 		a.closers = append(a.closers, client)
 	}
 }
+
+// WithApprover sets the tool approval strategy.
+// Default is nil (auto-approve all tools).
+func WithApprover(approver Approver) Option {
+	return func(a *Agent) { a.approver = approver }
+}
+
+// WithAutoApprove enables automatic approval of all tool calls (default behavior).
+func WithAutoApprove() Option {
+	return func(a *Agent) { a.approver = AutoApprover{} }
+}
+
+// WithInteractiveApprove enables interactive approval prompts for each tool call.
+// User can respond with y (yes), n (no), or a (approve all remaining).
+func WithInteractiveApprove() Option {
+	return func(a *Agent) { a.approver = NewPromptApprover() }
+}
+
+// WithPatternApprove auto-approves tools matching the allowed list, prompts for others.
+func WithPatternApprove(allowedTools []string) Option {
+	return func(a *Agent) {
+		a.approver = NewPatternApprover(allowedTools, NewPromptApprover())
+	}
+}

@@ -122,6 +122,17 @@ func (s *Session) executeSingleTool(ctx context.Context, tu ToolUseContent) Tool
 		return ToolResultContent{ToolUseID: tu.ID, Content: fmt.Sprintf("tool %q not found", tu.Name), IsError: true}
 	}
 
+	// Approval check
+	if s.agent.approver != nil {
+		approved, err := s.agent.approver.Approve(ctx, tu.Name, tu.Input)
+		if err != nil {
+			return ToolResultContent{ToolUseID: tu.ID, Content: fmt.Sprintf("approval error: %s", err.Error()), IsError: true}
+		}
+		if !approved {
+			return ToolResultContent{ToolUseID: tu.ID, Content: "tool call denied by user", IsError: true}
+		}
+	}
+
 	if s.agent.hooks.BeforeToolCall != nil {
 		if err := s.agent.hooks.BeforeToolCall(ctx, tu.Name, tu.Input); err != nil {
 			return ToolResultContent{ToolUseID: tu.ID, Content: fmt.Sprintf("tool call blocked: %s", err.Error()), IsError: true}

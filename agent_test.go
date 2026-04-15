@@ -635,3 +635,136 @@ func TestSharedState(t *testing.T) {
 		t.Errorf("expected 'value1' from context state")
 	}
 }
+
+func TestApprover_AutoApprove(t *testing.T) {
+	provider := &mockProvider{
+		responses: []*cc.ChatResponse{
+			{
+				Content:    []cc.Content{cc.ToolUseContent{ID: "c1", Name: "echo", Input: json.RawMessage(`{"text":"hi"}`)}},
+				StopReason: "tool_use",
+				Usage:      cc.Usage{InputTokens: 10, OutputTokens: 5},
+			},
+			{
+				Content:    []cc.Content{cc.TextContent{Text: "done"}},
+				StopReason: "end_turn",
+				Usage:      cc.Usage{InputTokens: 15, OutputTokens: 3},
+			},
+		},
+	}
+
+	echoTool := cc.NewFuncTool("echo", "Echo", func(_ context.Context, in struct {
+		Text string `json:"text"`
+	}) (string, error) {
+		return in.Text, nil
+	})
+
+	agent := cc.New(
+		cc.WithProvider(provider),
+		cc.WithModel("test"),
+		cc.WithTools(echoTool),
+		cc.WithAutoApprove(),
+	)
+
+	result, err := agent.Run(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Output != "done" {
+		t.Errorf("expected 'done', got %q", result.Output)
+	}
+}
+
+func TestApprover_DenyBlocksToolExecution(t *testing.T) {
+	provider := &mockProvider{
+		responses: []*cc.ChatResponse{
+			{
+				Content:    []cc.Content{cc.ToolUseContent{ID: "c1", Name: "shell", Input: json.RawMessage(`{"command":"rm -rf /"}`)}},
+				StopReason: "tool_use",
+				Usage:      cc.Usage{InputTokens: 10, OutputTokens: 5},
+			},
+			{
+				Content:    []cc.Content{cc.TextContent{Text: "Tool was denied"}},
+				StopReason: "end_turn",
+				Usage:      cc.Usage{InputTokens: 15, OutputTokens: 5},
+			},
+		},
+	}
+
+	shellTool := cc.NewFuncTool("shell", "Shell", func(_ context.Context, in struct {
+		Command string `json:"command"`
+	}) (string, error) {
+		t.Fatal("shell tool should not have been executed")
+		return "", nil
+	})
+
+	agent := cc.New(
+		cc.WithProvider(provider),
+		cc.WithModel("test"),
+		cc.WithTools(shellTool),
+		cc.WithApprover(cc.DenyApprover{}),
+	)
+
+	result, err := agent.Run(context.Background(), "delete everything")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Output != "Tool was denied" {
+		t.Errorf("expected 'Tool was denied', got %q", result.Output)
+	}
+}
+
+func TestApprover_PatternSelectiveApproval(t *testing.T) {
+	callLog := []string{}
+
+	provider := &mockProvider{
+		responses: []*cc.ChatResponse{
+			{
+				Content: []cc.Content{
+					cc.ToolUseContent{ID: "c1", Name: "read_file", Input: json.RawMessage(`{"path":"/tmp/test"}`)},
+					cc.ToolUseContent{ID: "c2", Name: "shell", Input: json.RawMessage(`{"command":"ls"}`)},
+				},
+				StopReason: "tool_use",
+				Usage:      cc.Usage{InputTokens: 10, OutputTokens: 5},
+			},
+			{
+				Content:    []cc.Content{cc.TextContent{Text: "done"}},
+				StopReason: "end_turn",
+				Usage:      cc.Usage{InputTokens: 15, OutputTokens: 3},
+			},
+		},
+	}
+
+	readTool := cc.NewFuncTool("read_file", "Read", func(_ context.Context, in struct {
+		Path string `json:"path"`
+	}) (string, error) {
+		callLog = append(callLog, "read_file")
+		return "content", nil
+	})
+
+	shellTool := cc.NewFuncTool("shell", "Shell", func(_ context.Context, in struct {
+		Command string `json:"command"`
+	}) (string, error) {
+		callLog = append(callLog, "shell")
+		return "output", nil
+	})
+
+	// read_file is auto-approved, shell is denied (fallback = DenyApprover)
+	approver := cc.NewPatternApprover([]string{"read_file"}, cc.DenyApprover{})
+
+	agent := cc.New(
+		cc.WithProvider(provider),
+		cc.WithModel("test"),
+		cc.WithTools(readTool, shellTool),
+		cc.WithApprover(approver),
+	)
+
+	_, err := agent.Run(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// read_file should have been called, shell should not
+	if len(callLog) != 1 || callLog[0] != "read_file" {
+		t.Errorf("expected only read_file to execute, got %v", callLog)
+	}
+}
