@@ -180,6 +180,7 @@ Use the available tools to read files, search code, and make edits. When you're 
 	agent := cc.New(
 		cc.WithProvider(provider),
 		cc.WithModel(model),
+		cc.WithMaxTokens(8192),
 		cc.WithTools(
 			tool.Shell(),
 			tool.ReadFile(),
