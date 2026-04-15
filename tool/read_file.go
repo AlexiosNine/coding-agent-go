@@ -55,7 +55,7 @@ func ReadFile() cc.Tool {
 		content := string(data)
 		lines := strings.Split(content, "\n")
 
-		// Handle start_line/end_line logic (legacy behavior)
+		// Handle start_line/end_line logic (legacy behavior, takes precedence over offset/limit)
 		if in.StartLine > 0 || in.EndLine > 0 {
 			if in.StartLine < 1 {
 				in.StartLine = 1
@@ -69,7 +69,8 @@ func ReadFile() cc.Tool {
 			if in.EndLine > len(lines) {
 				in.EndLine = len(lines)
 			}
-			// Convert to 0-indexed
+			// Convert to 0-indexed and return the range
+			// Note: offset/limit are ignored when start_line/end_line are specified
 			lines = lines[in.StartLine-1 : in.EndLine]
 			return strings.Join(lines, "\n"), nil
 		}
