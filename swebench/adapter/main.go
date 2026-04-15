@@ -127,11 +127,18 @@ The repository is checked out at: %s
 
 IMPORTANT:
 - Do NOT try to run tests or execute Python code - the environment is not set up for that
-- Focus on reading code, understanding the issue, and making the fix
-- Use grep to search, read_file to examine code
+- Focus ONLY on fixing the specific issue described - do not add extra features or improvements
+- Use grep to search, read_file to examine code (supports line ranges: start_line, end_line)
 - Use edit_file to make targeted changes (preferred over write_file for existing files)
 - edit_file replaces a specific string in a file - provide exact old_string and new_string
-- You have limited turns, so be efficient - read the key files, then make the fix
+- When you've made the fix, respond with text explaining what you did - this signals completion
+- Be efficient: use parallel tool calls when possible, read only necessary lines
+
+Workflow suggestion:
+1. grep to find relevant files and line numbers
+2. read_file with line ranges to examine specific sections
+3. edit_file to make the fix
+4. Explain what you did (this ends the task)
 
 Use the available tools to read files, search code, and make edits. When you're done, I will generate a patch from your changes.`,
 		instance.Repo,
