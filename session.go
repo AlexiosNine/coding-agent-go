@@ -14,6 +14,7 @@ type Session struct {
 	agent          *Agent
 	memory         Memory
 	outputBuffer   *OutputBuffer
+	dedup          *MessageDeduplicator
 	systemOverride string // if set, overrides agent.system for this session
 }
 
@@ -102,10 +103,15 @@ func (s *Session) step(ctx context.Context) (*ChatResponse, error) {
 		system = s.systemOverride
 	}
 
+	messages := s.memory.Messages()
+	if s.dedup != nil {
+		messages = s.dedup.Process(messages)
+	}
+
 	params := ChatParams{
 		Model:     s.agent.model,
 		System:    system,
-		Messages:  s.memory.Messages(),
+		Messages:  messages,
 		Tools:     s.agent.toolDefs(),
 		MaxTokens: s.agent.maxTokens,
 	}
@@ -255,10 +261,15 @@ func (s *Session) streamStep(ctx context.Context, out chan<- StreamEvent) (*Chat
 		system = s.systemOverride
 	}
 
+	messages := s.memory.Messages()
+	if s.dedup != nil {
+		messages = s.dedup.Process(messages)
+	}
+
 	params := ChatParams{
 		Model:     s.agent.model,
 		System:    system,
-		Messages:  s.memory.Messages(),
+		Messages:  messages,
 		Tools:     s.agent.toolDefs(),
 		MaxTokens: s.agent.maxTokens,
 	}
