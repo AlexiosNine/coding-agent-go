@@ -143,34 +143,42 @@ func (c *CompressMemory) Len() int {
 
 func (c *CompressMemory) compress() {
 	n := len(c.messages)
-	if n <= c.recentWindow+1 {
-		return // nothing to compress
+	if n <= 3 {
+		return // need at least 3 messages to compress
 	}
 
-	// Split: [first] [middle...] [recent...]
-	first := c.messages[0]                        // preserve first message (user's initial context)
-	recentStart := n - c.recentWindow
-	middle := c.messages[1:recentStart]
-	recent := c.messages[recentStart:]
+	// Dynamic split: keep first 10% and last 10%, compress middle 80%
+	keepFirst := max(1, n/10)
+	keepLast := max(1, n/10)
 
-	// Tier 1: Strip tool results from middle, keep only text
-	// Tier 2: Summarize middle conversation into a single message
-	summary := summarizeMessages(middle)
+	// Ensure we have something to compress
+	if keepFirst+keepLast >= n {
+		keepFirst = 1
+		keepLast = max(1, n/2)
+	}
 
-	// Rebuild: [first] [summary] [recent...]
-	compressed := make([]Message, 0, 2+len(recent))
-	compressed = append(compressed, first)
-	compressed = append(compressed, NewUserMessage(summary))
-	compressed = append(compressed, recent...)
+	first := c.messages[:keepFirst]
+	middleStart := keepFirst
+	middleEnd := n - keepLast
+	middle := c.messages[middleStart:middleEnd]
+	recent := c.messages[middleEnd:]
 
-	c.messages = compressed
+	// Compress middle: simplify tool results, summarize conversation
+	compressed := compressMiddleMessages(middle)
+
+	// Rebuild: [first 10%] [compressed middle] [last 10%]
+	result := make([]Message, 0, len(first)+1+len(recent))
+	result = append(result, first...)
+	result = append(result, NewUserMessage(compressed))
+	result = append(result, recent...)
+
+	c.messages = result
 }
 
-// summarizeMessages creates a text summary of a slice of messages.
-// Extracts text content, drops tool results, preserves key information.
-func summarizeMessages(msgs []Message) string {
+// compressMiddleMessages simplifies tool results and summarizes conversation.
+func compressMiddleMessages(msgs []Message) string {
 	var parts []string
-	parts = append(parts, "[Previous conversation summary]")
+	parts = append(parts, "[Compressed conversation history]")
 
 	turnCount := 0
 	toolCallCount := 0
@@ -182,21 +190,34 @@ func summarizeMessages(msgs []Message) string {
 		if len(toolUses) > 0 {
 			toolCallCount += len(toolUses)
 			for _, tu := range toolUses {
-				parts = append(parts, fmt.Sprintf("- Called tool %q", tu.Name))
+				// Keep tool name and truncated input
+				inputStr := string(tu.Input)
+				if len(inputStr) > 100 {
+					inputStr = inputStr[:100] + "..."
+				}
+				parts = append(parts, fmt.Sprintf("- Tool: %s(%s)", tu.Name, inputStr))
 			}
 			continue
 		}
 
-		// Check for tool results
+		// Check for tool results - simplify but don't drop
 		hasToolResult := false
 		for _, content := range msg.Content {
-			if _, ok := content.(ToolResultContent); ok {
+			if tr, ok := content.(ToolResultContent); ok {
 				hasToolResult = true
-				break
+				output := tr.Content
+				if len(output) > 200 {
+					output = output[:200] + "..."
+				}
+				idPrefix := tr.ToolUseID
+				if len(idPrefix) > 8 {
+					idPrefix = idPrefix[:8]
+				}
+				parts = append(parts, fmt.Sprintf("- Result[%s]: %s", idPrefix, output))
 			}
 		}
 		if hasToolResult {
-			continue // drop tool results from summary
+			continue
 		}
 
 		if text != "" {
@@ -212,4 +233,11 @@ func summarizeMessages(msgs []Message) string {
 
 	parts = append(parts, fmt.Sprintf("[%d turns, %d tool calls compressed]", turnCount, toolCallCount))
 	return strings.Join(parts, "\n")
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

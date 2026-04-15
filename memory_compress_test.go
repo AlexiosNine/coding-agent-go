@@ -2,6 +2,7 @@ package cc_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -53,80 +54,100 @@ func TestCompressMemory_PreservesFirstMessage(t *testing.T) {
 }
 
 func TestCompressMemory_PreservesRecentMessages(t *testing.T) {
-	mem := cc.NewCompressMemory(3, 8)
+	// 20 messages: first 10% = 2, last 10% = 2, middle compressed
+	mem := cc.NewCompressMemory(3, 10)
 
-	mem.Add(cc.NewUserMessage("first"))
-	for i := range 5 {
-		mem.Add(cc.NewUserMessage("old " + string(rune('A'+i))))
+	for i := range 11 {
+		mem.Add(cc.NewUserMessage(fmt.Sprintf("msg-%d", i)))
 	}
-	mem.Add(cc.NewUserMessage("recent-1"))
-	mem.Add(cc.NewUserMessage("recent-2"))
-	mem.Add(cc.NewUserMessage("recent-3"))
 
 	msgs := mem.Messages()
 	n := len(msgs)
 
-	// Last 3 should be the recent messages
-	if msgs[n-1].Text() != "recent-3" {
-		t.Errorf("expected last message 'recent-3', got %q", msgs[n-1].Text())
+	// First message preserved
+	if msgs[0].Text() != "msg-0" {
+		t.Errorf("expected first message 'msg-0', got %q", msgs[0].Text())
 	}
-	if msgs[n-2].Text() != "recent-2" {
-		t.Errorf("expected second-to-last 'recent-2', got %q", msgs[n-2].Text())
+
+	// Last message preserved
+	if msgs[n-1].Text() != "msg-10" {
+		t.Errorf("expected last message 'msg-10', got %q", msgs[n-1].Text())
 	}
-	if msgs[n-3].Text() != "recent-1" {
-		t.Errorf("expected third-to-last 'recent-1', got %q", msgs[n-3].Text())
+
+	// Should have compressed (fewer than 11 messages)
+	if n >= 11 {
+		t.Errorf("expected compression, still have %d messages", n)
 	}
+	t.Logf("Compressed %d → %d messages", 11, n)
 }
 
 func TestCompressMemory_SummaryContainsToolInfo(t *testing.T) {
-	mem := cc.NewCompressMemory(2, 6)
+	mem := cc.NewCompressMemory(2, 10)
 
+	// Need enough messages to trigger compression (>10)
 	mem.Add(cc.NewUserMessage("first"))
-	// Add assistant message with tool use
 	mem.Add(cc.Message{
 		Role: cc.RoleAssistant,
 		Content: []cc.Content{
-			cc.ToolUseContent{ID: "c1", Name: "shell", Input: json.RawMessage(`{"command":"ls"}`)},
+			cc.ToolUseContent{ID: "call_12345678", Name: "shell", Input: json.RawMessage(`{"command":"ls"}`)},
 		},
 	})
-	// Add tool result
-	mem.Add(cc.NewToolResultMessage(cc.ToolResultContent{ToolUseID: "c1", Content: "file1.go\nfile2.go"}))
+	mem.Add(cc.NewToolResultMessage(cc.ToolResultContent{ToolUseID: "call_12345678", Content: "file1.go\nfile2.go"}))
 	mem.Add(cc.NewAssistantMessage("I found 2 files"))
-	mem.Add(cc.NewUserMessage("recent-1"))
-	mem.Add(cc.NewUserMessage("recent-2"))
-	mem.Add(cc.NewUserMessage("trigger compression"))
+	for i := range 8 {
+		mem.Add(cc.NewUserMessage(fmt.Sprintf("filler-%d", i)))
+	}
 
 	msgs := mem.Messages()
 
-	// Second message should be the summary
-	summary := msgs[1].Text()
-	if !strings.Contains(summary, "summary") && !strings.Contains(summary, "Summary") &&
-		!strings.Contains(summary, "compressed") {
-		t.Errorf("expected summary message, got %q", summary)
+	// Find the compressed summary message
+	found := false
+	for _, msg := range msgs {
+		text := msg.Text()
+		if strings.Contains(text, "Compressed") || strings.Contains(text, "compressed") {
+			found = true
+			if !strings.Contains(text, "shell") {
+				t.Errorf("expected summary to mention tool 'shell', got %q", text)
+			}
+			// Tool results should be simplified, not dropped
+			if !strings.Contains(text, "Result") {
+				t.Errorf("expected summary to contain simplified tool results, got %q", text)
+			}
+			break
+		}
 	}
-	if !strings.Contains(summary, "shell") {
-		t.Errorf("expected summary to mention tool 'shell', got %q", summary)
+	if !found {
+		t.Error("expected a compressed summary message")
 	}
 }
 
-func TestCompressMemory_DropsToolResults(t *testing.T) {
-	mem := cc.NewCompressMemory(2, 6)
+func TestCompressMemory_SimplifiesToolResults(t *testing.T) {
+	mem := cc.NewCompressMemory(2, 10)
 
 	mem.Add(cc.NewUserMessage("first"))
-	mem.Add(cc.NewToolResultMessage(cc.ToolResultContent{ToolUseID: "c1", Content: "LARGE TOOL OUTPUT THAT SHOULD BE DROPPED"}))
-	mem.Add(cc.NewAssistantMessage("old response"))
-	mem.Add(cc.NewUserMessage("old question"))
-	mem.Add(cc.NewUserMessage("recent-1"))
-	mem.Add(cc.NewUserMessage("recent-2"))
-	mem.Add(cc.NewUserMessage("trigger"))
+	// Large tool result (>200 chars)
+	largeOutput := strings.Repeat("x", 500)
+	mem.Add(cc.NewToolResultMessage(cc.ToolResultContent{ToolUseID: "call_12345678", Content: largeOutput}))
+	for i := range 10 {
+		mem.Add(cc.NewUserMessage(fmt.Sprintf("msg-%d", i)))
+	}
 
 	msgs := mem.Messages()
 
-	// The large tool output should not appear in any message
+	// Tool result should be simplified (truncated), not dropped entirely
+	foundSimplified := false
 	for _, msg := range msgs {
-		if strings.Contains(msg.Text(), "LARGE TOOL OUTPUT") {
-			t.Error("tool result should have been dropped during compression")
+		text := msg.Text()
+		if strings.Contains(text, "Result[") {
+			foundSimplified = true
+			// Should be truncated to ~200 chars, not the full 500
+			if strings.Contains(text, strings.Repeat("x", 300)) {
+				t.Error("tool result should be truncated, not kept in full")
+			}
 		}
+	}
+	if !foundSimplified {
+		t.Error("expected simplified tool result in compressed summary")
 	}
 }
 
