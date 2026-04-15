@@ -133,6 +133,13 @@ func (s *Session) executeSingleTool(ctx context.Context, tu ToolUseContent) Tool
 		}
 	}
 
+	// Sandbox check
+	if s.agent.sandbox != nil {
+		if err := s.agent.sandbox.CheckToolCall(tu.Name, tu.Input); err != nil {
+			return ToolResultContent{ToolUseID: tu.ID, Content: fmt.Sprintf("sandbox blocked: %s", err.Error()), IsError: true}
+		}
+	}
+
 	if s.agent.hooks.BeforeToolCall != nil {
 		if err := s.agent.hooks.BeforeToolCall(ctx, tu.Name, tu.Input); err != nil {
 			return ToolResultContent{ToolUseID: tu.ID, Content: fmt.Sprintf("tool call blocked: %s", err.Error()), IsError: true}

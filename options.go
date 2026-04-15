@@ -143,3 +143,19 @@ func WithPatternApprove(allowedTools []string) Option {
 		a.approver = NewPatternApprover(allowedTools, NewPromptApprover())
 	}
 }
+
+// WithSandbox sets file/command access restrictions for tools.
+func WithSandbox(s *Sandbox) Option {
+	return func(a *Agent) { a.sandbox = s }
+}
+
+// WithDefaultSandbox enables the default sandbox that blocks dangerous commands.
+func WithDefaultSandbox() Option {
+	return func(a *Agent) { a.sandbox = DefaultSandbox() }
+}
+
+// WithStrictSandbox enables a sandbox that restricts file access to allowed paths
+// and blocks dangerous commands.
+func WithStrictSandbox(allowedPaths ...string) Option {
+	return func(a *Agent) { a.sandbox = StrictSandbox(allowedPaths) }
+}

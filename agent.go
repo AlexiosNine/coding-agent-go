@@ -24,6 +24,7 @@ type Agent struct {
 	hooks          Hooks
 	memoryFactory  func() Memory
 	approver       Approver        // tool approval strategy
+	sandbox        *Sandbox        // file/command access restrictions
 	closers        []io.Closer     // MCP clients and other resources to clean up
 }
 
