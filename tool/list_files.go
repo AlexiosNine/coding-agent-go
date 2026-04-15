@@ -12,9 +12,11 @@ import (
 )
 
 type listFilesInput struct {
-	Path      string `json:"path" desc:"Directory path to list (default: current directory)"`
-	Recursive bool   `json:"recursive" desc:"List files recursively"`
-	ShowHidden bool  `json:"show_hidden" desc:"Include hidden files (starting with .)"`
+	Path       string `json:"path" desc:"Directory path to list (default: current directory)"`
+	Recursive  bool   `json:"recursive" desc:"List files recursively"`
+	ShowHidden bool   `json:"show_hidden" desc:"Include hidden files (starting with .)"`
+	Offset     int    `json:"offset,omitempty" desc:"Optional: entry offset for pagination (0-indexed)"`
+	Limit      int    `json:"limit,omitempty" desc:"Optional: maximum entries per page (default 100)"`
 }
 
 // ListFiles returns a tool that lists files in a directory.
@@ -44,8 +46,13 @@ func ListFiles() cc.Tool {
 				return "", fmt.Errorf("%s is not a directory", absPath)
 			}
 
-			var result strings.Builder
-			result.WriteString(fmt.Sprintf("Contents of %s:\n\n", absPath))
+			limit := input.Limit
+			if limit <= 0 {
+				limit = 100
+			}
+
+			// Collect all entries into a slice
+			var entries []string
 
 			if input.Recursive {
 				err = filepath.WalkDir(absPath, func(path string, d os.DirEntry, err error) error {
@@ -67,30 +74,30 @@ func ListFiles() cc.Tool {
 					}
 
 					if d.IsDir() {
-						result.WriteString(fmt.Sprintf("%s/\n", relPath))
+						entries = append(entries, fmt.Sprintf("%s/", relPath))
 					} else {
 						info, _ := d.Info()
-						result.WriteString(fmt.Sprintf("%s (%d bytes)\n", relPath, info.Size()))
+						entries = append(entries, fmt.Sprintf("%s (%d bytes)", relPath, info.Size()))
 					}
 					return nil
 				})
 			} else {
-				entries, err := os.ReadDir(absPath)
-				if err != nil {
-					return "", fmt.Errorf("read directory: %w", err)
+				dirEntries, readErr := os.ReadDir(absPath)
+				if readErr != nil {
+					return "", fmt.Errorf("read directory: %w", readErr)
 				}
 
-				for _, entry := range entries {
+				for _, entry := range dirEntries {
 					// Skip hidden files if not requested
 					if !input.ShowHidden && strings.HasPrefix(entry.Name(), ".") {
 						continue
 					}
 
 					if entry.IsDir() {
-						result.WriteString(fmt.Sprintf("%s/\n", entry.Name()))
+						entries = append(entries, fmt.Sprintf("%s/", entry.Name()))
 					} else {
 						info, _ := entry.Info()
-						result.WriteString(fmt.Sprintf("%s (%d bytes)\n", entry.Name(), info.Size()))
+						entries = append(entries, fmt.Sprintf("%s (%d bytes)", entry.Name(), info.Size()))
 					}
 				}
 			}
@@ -99,7 +106,37 @@ func ListFiles() cc.Tool {
 				return "", err
 			}
 
-			return result.String(), nil
+			total := len(entries)
+			offset := input.Offset
+			if offset < 0 {
+				offset = 0
+			}
+
+			header := fmt.Sprintf("Contents of %s:\n\n", absPath)
+
+			if total == 0 {
+				return header + "(empty)", nil
+			}
+
+			if offset >= total {
+				return fmt.Sprintf("%sNo entries at offset %d (total: %d)", header, offset, total), nil
+			}
+
+			end := offset + limit
+			if end > total {
+				end = total
+			}
+
+			page := strings.Join(entries[offset:end], "\n")
+			hasMore := end < total
+
+			result := header + page
+
+			if hasMore {
+				result += fmt.Sprintf("\n---\nTotal: %d entries. Next offset: %d", total, end)
+			}
+
+			return result, nil
 		},
 	)
 }
@@ -119,6 +156,14 @@ func (t listFilesInput) InputSchema() json.RawMessage {
 			"show_hidden": {
 				"type": "boolean",
 				"description": "Include hidden files (starting with .)"
+			},
+			"offset": {
+				"type": "integer",
+				"description": "Optional: entry offset for pagination (0-indexed)"
+			},
+			"limit": {
+				"type": "integer",
+				"description": "Optional: maximum entries per page (default 100)"
 			}
 		}
 	}`)
