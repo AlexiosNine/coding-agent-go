@@ -14,6 +14,8 @@ import (
 type shellInput struct {
 	Command string `json:"command" desc:"The shell command to execute"`
 	Timeout int    `json:"timeout" desc:"Timeout in seconds (default 30)"`
+	Offset  int    `json:"offset,omitempty" desc:"Optional: line offset for pagination (0-indexed)"`
+	Limit   int    `json:"limit,omitempty" desc:"Optional: maximum lines per page (default 200)"`
 }
 
 // Shell returns a tool that executes shell commands.
@@ -21,6 +23,27 @@ type shellInput struct {
 // Otherwise, commands run directly (subject to application-level sandbox checks).
 func Shell() cc.Tool {
 	return cc.NewFuncTool("shell", "Execute a shell command and return its output", func(ctx context.Context, in shellInput) (string, error) {
+		limit := in.Limit
+		if limit <= 0 {
+			limit = 200
+		}
+
+		// If offset > 0, try to serve from buffer
+		if in.Offset > 0 {
+			buf := cc.GetOutputBuffer(ctx)
+			if buf != nil {
+				page, total, exists := buf.TryGetPage(in.Command, in.Offset, limit)
+				if exists {
+					hasMore := (in.Offset + limit) < total
+					if hasMore {
+						nextOffset := in.Offset + limit
+						return fmt.Sprintf("%s\n---\nTotal: %d lines. Next offset: %d", page, total, nextOffset), nil
+					}
+					return page, nil
+				}
+			}
+		}
+
 		timeout := 30
 		if in.Timeout > 0 {
 			timeout = in.Timeout
@@ -49,6 +72,28 @@ func Shell() cc.Tool {
 		if err != nil {
 			return fmt.Sprintf("Error: %s\nOutput: %s", err.Error(), result), nil
 		}
-		return result, nil
+
+		// Store in buffer for future pagination
+		buf := cc.GetOutputBuffer(ctx)
+		if buf != nil {
+			buf.Store(in.Command, result)
+		}
+
+		// Apply pagination
+		lines := strings.Split(result, "\n")
+		total := len(lines)
+		end := limit
+		if end > total {
+			end = total
+		}
+
+		page := strings.Join(lines[0:end], "\n")
+		hasMore := end < total
+
+		if hasMore {
+			return fmt.Sprintf("%s\n---\nTotal: %d lines. Next offset: %d", page, total, end), nil
+		}
+
+		return page, nil
 	})
 }
