@@ -13,6 +13,7 @@ import (
 type Session struct {
 	agent          *Agent
 	memory         Memory
+	outputBuffer   *OutputBuffer
 	systemOverride string // if set, overrides agent.system for this session
 }
 
@@ -176,6 +177,8 @@ func (s *Session) executeSingleTool(ctx context.Context, tu ToolUseContent) Tool
 	if s.agent.osSandbox != nil {
 		ctx = WithOSSandbox(ctx, s.agent.osSandbox)
 	}
+
+	ctx = WithOutputBuffer(ctx, s.outputBuffer)
 
 	output, err := tool.Execute(ctx, tu.Input)
 

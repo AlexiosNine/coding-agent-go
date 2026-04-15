@@ -56,8 +56,9 @@ func New(opts ...Option) *Agent {
 // NewSession creates a new conversation session with independent memory.
 func (a *Agent) NewSession() *Session {
 	return &Session{
-		agent:  a,
-		memory: a.memoryFactory(),
+		agent:        a,
+		memory:       a.memoryFactory(),
+		outputBuffer: NewOutputBuffer(50 << 20),
 	}
 }
 
