@@ -17,6 +17,8 @@ type shellInput struct {
 }
 
 // Shell returns a tool that executes shell commands.
+// If an OSSandbox is available in the context, commands run with OS-level isolation.
+// Otherwise, commands run directly (subject to application-level sandbox checks).
 func Shell() cc.Tool {
 	return cc.NewFuncTool("shell", "Execute a shell command and return its output", func(ctx context.Context, in shellInput) (string, error) {
 		timeout := 30
@@ -27,7 +29,20 @@ func Shell() cc.Tool {
 		ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 		defer cancel()
 
-		cmd := exec.CommandContext(ctx, "sh", "-c", in.Command)
+		var cmd *exec.Cmd
+		var err error
+
+		// Check for OS-level sandbox
+		if osSandbox := cc.GetOSSandbox(ctx); osSandbox != nil && osSandbox.IsAvailable() {
+			cmd, err = osSandbox.WrapCommand(ctx, in.Command)
+			if err != nil {
+				return fmt.Sprintf("OS sandbox error: %s", err.Error()), nil
+			}
+		} else {
+			// Fallback to direct execution
+			cmd = exec.CommandContext(ctx, "sh", "-c", in.Command)
+		}
+
 		out, err := cmd.CombinedOutput()
 		result := strings.TrimSpace(string(out))
 

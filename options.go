@@ -159,3 +159,22 @@ func WithDefaultSandbox() Option {
 func WithStrictSandbox(allowedPaths ...string) Option {
 	return func(a *Agent) { a.sandbox = StrictSandbox(allowedPaths) }
 }
+
+// WithCompressMemory enables automatic context compression when messages exceed maxMessages.
+// recentWindow controls how many recent messages are preserved during compression.
+func WithCompressMemory(recentWindow, maxMessages int) Option {
+	return func(a *Agent) {
+		a.memoryFactory = func() Memory {
+			return NewCompressMemory(recentWindow, maxMessages)
+		}
+	}
+}
+
+// WithOSSandboxOption enables OS-level sandboxing for shell commands.
+// Requires external dependencies: sandbox-exec (macOS) or Docker (Linux).
+// Commands are restricted to allowedPaths with network isolation.
+func WithOSSandboxOption(allowedPaths ...string) Option {
+	return func(a *Agent) {
+		a.osSandbox = NewOSSandbox(allowedPaths...)
+	}
+}

@@ -25,6 +25,7 @@ type Agent struct {
 	memoryFactory  func() Memory
 	approver       Approver        // tool approval strategy
 	sandbox        *Sandbox        // file/command access restrictions
+	osSandbox      *OSSandbox      // OS-level sandbox (opt-in)
 	closers        []io.Closer     // MCP clients and other resources to clean up
 }
 

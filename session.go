@@ -146,6 +146,11 @@ func (s *Session) executeSingleTool(ctx context.Context, tu ToolUseContent) Tool
 		}
 	}
 
+	// Propagate OS sandbox via context
+	if s.agent.osSandbox != nil {
+		ctx = WithOSSandbox(ctx, s.agent.osSandbox)
+	}
+
 	output, err := tool.Execute(ctx, tu.Input)
 
 	if s.agent.hooks.AfterToolCall != nil {
