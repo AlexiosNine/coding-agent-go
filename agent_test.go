@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -710,6 +711,37 @@ func TestApprover_DenyBlocksToolExecution(t *testing.T) {
 	}
 	if result.Output != "Tool was denied" {
 		t.Errorf("expected 'Tool was denied', got %q", result.Output)
+	}
+}
+
+func TestAgent_ToolDefs_CachedAndInvalidated(t *testing.T) {
+	tool1 := cc.NewFuncTool("echo", "Echo input", func(_ context.Context, in struct {
+		Text string `json:"text"`
+	}) (string, error) {
+		return in.Text, nil
+	})
+
+	a := cc.New(cc.WithTools(tool1))
+
+	first := a.DebugToolDefsForTest()
+	second := a.DebugToolDefsForTest()
+	if len(first) != 1 || len(second) != 1 {
+		t.Fatalf("expected 1 tool def, got %d and %d", len(first), len(second))
+	}
+	if &first[0] != &second[0] {
+		t.Fatal("expected cached tool defs to reuse same backing slice")
+	}
+
+	tool2 := cc.NewFuncTool("upper", "Uppercase input", func(_ context.Context, in struct {
+		Text string `json:"text"`
+	}) (string, error) {
+		return strings.ToUpper(in.Text), nil
+	})
+	a.AddTool(tool2)
+
+	third := a.DebugToolDefsForTest()
+	if len(third) != 2 {
+		t.Fatalf("expected 2 tool defs after invalidation, got %d", len(third))
 	}
 }
 

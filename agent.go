@@ -13,21 +13,22 @@ const (
 // Agent is the core runtime that orchestrates LLM calls and tool execution.
 // Agent itself is stateless — conversation state lives in Session.
 type Agent struct {
-	provider       Provider
-	tools          map[string]Tool
-	system         string
-	model          string
-	maxTurns       int
-	maxTokens      int
-	maxConcurrency     int
+	provider            Provider
+	tools               map[string]Tool
+	cachedToolDefs      []ToolDef
+	system              string
+	model               string
+	maxTurns            int
+	maxTokens           int
+	maxConcurrency      int
 	maxExplorationTurns int // abort if this many consecutive turns have no edit/write (0 = disabled)
-	retry          *RetryConfig
-	hooks          Hooks
-	memoryFactory  func() Memory
-	approver       Approver        // tool approval strategy
-	sandbox        *Sandbox        // file/command access restrictions
-	osSandbox      *OSSandbox      // OS-level sandbox (opt-in)
-	closers        []io.Closer     // MCP clients and other resources to clean up
+	retry               *RetryConfig
+	hooks               Hooks
+	memoryFactory       func() Memory
+	approver            Approver   // tool approval strategy
+	sandbox             *Sandbox   // file/command access restrictions
+	osSandbox           *OSSandbox // OS-level sandbox (opt-in)
+	closers             []io.Closer // MCP clients and other resources to clean up
 }
 
 // RunResult contains the outcome of an agent run.
@@ -69,6 +70,7 @@ func (a *Agent) Run(ctx context.Context, input string) (*RunResult, error) {
 // AddTool registers a tool with the agent.
 func (a *Agent) AddTool(t Tool) {
 	a.tools[t.Name()] = t
+	a.cachedToolDefs = nil
 }
 
 // SetSystem updates the system prompt.
@@ -81,15 +83,23 @@ func (a *Agent) toolDefs() []ToolDef {
 	if len(a.tools) == 0 {
 		return nil
 	}
-	defs := make([]ToolDef, 0, len(a.tools))
-	for _, t := range a.tools {
-		defs = append(defs, ToolDef{
-			Name:        t.Name(),
-			Description: t.Description(),
-			InputSchema: t.InputSchema(),
-		})
+	if a.cachedToolDefs == nil {
+		defs := make([]ToolDef, 0, len(a.tools))
+		for _, t := range a.tools {
+			defs = append(defs, ToolDef{
+				Name:        t.Name(),
+				Description: t.Description(),
+				InputSchema: t.InputSchema(),
+			})
+		}
+		a.cachedToolDefs = defs
 	}
-	return defs
+	return a.cachedToolDefs
+}
+
+// DebugToolDefsForTest exposes cached tool defs for tests only.
+func (a *Agent) DebugToolDefsForTest() []ToolDef {
+	return a.toolDefs()
 }
 
 // Close shuts down all MCP clients and other resources.
