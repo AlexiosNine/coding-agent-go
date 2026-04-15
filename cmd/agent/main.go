@@ -65,7 +65,7 @@ func main() {
 		opts = append(opts, cc.WithInteractiveApprove())
 	case "pattern":
 		// Auto-approve read-only tools, prompt for others
-		opts = append(opts, cc.WithPatternApprove([]string{"shell_read", "read_file", "http_get"}))
+		opts = append(opts, cc.WithPatternApprove([]string{"list_files", "grep", "read_file", "http_request"}))
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown approval mode: %s\n", *approvalMode)
 		os.Exit(1)
@@ -76,6 +76,8 @@ func main() {
 			tool.Shell(),
 			tool.ReadFile(),
 			tool.WriteFile(),
+			tool.ListFiles(),
+			tool.Grep(),
 			tool.HTTPRequest(),
 		))
 	}
