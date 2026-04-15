@@ -19,7 +19,7 @@ type readFileInput struct {
 
 // ReadFile returns a tool that reads file contents.
 // Supports optional line range: start_line and end_line (1-indexed, inclusive).
-// Supports pagination via offset and limit for large files.
+// Supports pagination via offset and limit for large files (default 500 lines per page).
 func ReadFile() cc.Tool {
 	return cc.NewFuncTool("read_file", "Read the contents of a file. Optionally specify start_line and end_line to read a specific range, or use offset/limit for pagination.", func(ctx context.Context, in readFileInput) (string, error) {
 		if in.Path == "" {
@@ -34,7 +34,7 @@ func ReadFile() cc.Tool {
 				if exists {
 					// Serve from buffer
 					if in.Limit <= 0 {
-						in.Limit = 200
+						in.Limit = 500
 					}
 					hasMore := (in.Offset + in.Limit) < total
 					if hasMore {
@@ -83,7 +83,7 @@ func ReadFile() cc.Tool {
 
 		// Apply pagination
 		if in.Limit <= 0 {
-			in.Limit = 200
+			in.Limit = 500
 		}
 		if in.Offset < 0 {
 			in.Offset = 0
