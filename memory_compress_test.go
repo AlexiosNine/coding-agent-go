@@ -160,3 +160,57 @@ func TestCompressMemory_RepeatedCompression(t *testing.T) {
 	}
 	t.Logf("After first compression: %d, after second: %d", afterFirst, afterSecond)
 }
+
+func TestTokenAwareCompressMemory_TriggersAt70Percent(t *testing.T) {
+	// 200k context window, compress at 70% = 140k tokens
+	mem := cc.NewTokenAwareCompressMemory(200000, 10)
+
+	// Each message ~10000 chars ≈ 2500 tokens
+	// 56 messages ≈ 140k tokens, should trigger compression
+	largeText := strings.Repeat("x", 10000)
+
+	for range 55 {
+		mem.Add(cc.NewUserMessage(largeText))
+	}
+	before := mem.EstimateTokens()
+	if before < 135000 || before > 145000 {
+		t.Logf("before compression: %d tokens (expected ~140k)", before)
+	}
+
+	// Add one more message to cross threshold
+	mem.Add(cc.NewUserMessage(largeText))
+	after := mem.EstimateTokens()
+
+	// Should have compressed, reducing token count significantly
+	if after >= before {
+		t.Errorf("expected compression to reduce tokens: before=%d after=%d", before, after)
+	}
+	if mem.Len() >= 56 {
+		t.Errorf("expected compression to reduce message count, got %d", mem.Len())
+	}
+}
+
+func TestTokenAwareCompressMemory_UsagePercent(t *testing.T) {
+	mem := cc.NewTokenAwareCompressMemory(1000, 5)
+
+	// Add ~400 tokens (1600 chars)
+	mem.Add(cc.NewUserMessage(strings.Repeat("x", 1600)))
+	percent := mem.TokenUsagePercent()
+
+	if percent < 35 || percent > 45 {
+		t.Errorf("expected ~40%% usage, got %.1f%%", percent)
+	}
+}
+
+func TestTokenAwareCompressMemory_DoesNotCompressBeforeThreshold(t *testing.T) {
+	mem := cc.NewTokenAwareCompressMemory(10000, 5)
+
+	// Add ~5000 tokens (50% of context window, below 70%)
+	for range 2 {
+		mem.Add(cc.NewUserMessage(strings.Repeat("x", 10000))) // ~2500 tokens each
+	}
+
+	if mem.Len() != 2 {
+		t.Errorf("expected no compression before threshold, got %d messages", mem.Len())
+	}
+}

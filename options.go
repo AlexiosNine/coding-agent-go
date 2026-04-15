@@ -170,6 +170,18 @@ func WithCompressMemory(recentWindow, maxMessages int) Option {
 	}
 }
 
+// WithTokenAwareCompressMemory enables automatic context compression based on estimated token usage.
+// Compression triggers when estimated tokens reach 70% of contextWindowSize.
+// contextWindowSize is the model's context window in tokens (e.g. 200000 for 200k models).
+// recentWindow controls how many recent messages are preserved during compression.
+func WithTokenAwareCompressMemory(contextWindowSize, recentWindow int) Option {
+	return func(a *Agent) {
+		a.memoryFactory = func() Memory {
+			return NewTokenAwareCompressMemory(contextWindowSize, recentWindow)
+		}
+	}
+}
+
 // WithOSSandboxOption enables OS-level sandboxing for shell commands.
 // Requires external dependencies: sandbox-exec (macOS) or Docker (Linux).
 // Commands are restricted to allowedPaths with network isolation.

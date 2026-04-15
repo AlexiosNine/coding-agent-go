@@ -6,22 +6,29 @@ import (
 )
 
 const (
-	defaultRecentWindow = 10
-	defaultMaxMessages  = 50
+	defaultRecentWindow      = 10
+	defaultMaxMessages       = 50
+	defaultContextWindowSize = 0      // 0 means no token-based compression
+	defaultCompressThreshold = 0.70   // compress at 70% of context window
+	estimatedCharsPerToken   = 4      // rough estimate: 1 token ≈ 4 chars
 )
 
 // CompressMemory automatically compresses conversation history when it exceeds
-// a threshold. It preserves the first message (system context), recent messages,
-// and summarizes the middle into a single message.
+// a threshold. Supports two trigger modes:
+//
+//  1. Message count: compress when len(messages) > maxMessages
+//  2. Token estimate: compress when estimated tokens > contextWindowSize * compressThreshold
 //
 // 3-tier compression strategy (borrowed from Claude Code):
 //   - Tier 1: Drop old tool results (keep only last turn's results)
 //   - Tier 2: Summarize old conversation turns into a single message
 //   - Tier 3: Keep only system prompt + recent window
 type CompressMemory struct {
-	messages     []Message
-	recentWindow int // number of recent messages to always keep
-	maxMessages  int // trigger compression when exceeded
+	messages          []Message
+	recentWindow      int     // number of recent messages to always keep
+	maxMessages       int     // trigger compression by message count
+	contextWindowSize int     // model's context window in tokens (0 = disabled)
+	compressThreshold float64 // fraction of context window that triggers compression (e.g. 0.70)
 }
 
 // NewCompressMemory creates a memory that auto-compresses when messages exceed maxMessages.
@@ -37,16 +44,86 @@ func NewCompressMemory(recentWindow, maxMessages int) *CompressMemory {
 		recentWindow = maxMessages / 2
 	}
 	return &CompressMemory{
-		recentWindow: recentWindow,
-		maxMessages:  maxMessages,
+		recentWindow:      recentWindow,
+		maxMessages:       maxMessages,
+		compressThreshold: defaultCompressThreshold,
+	}
+}
+
+// NewTokenAwareCompressMemory creates a memory that compresses based on estimated token usage.
+// contextWindowSize is the model's context window in tokens (e.g. 200000 for 200k).
+// Compression triggers when estimated tokens reach 70% of the window.
+func NewTokenAwareCompressMemory(contextWindowSize int, recentWindow int) *CompressMemory {
+	if recentWindow <= 0 {
+		recentWindow = defaultRecentWindow
+	}
+	return &CompressMemory{
+		recentWindow:      recentWindow,
+		maxMessages:       1000000, // effectively disable message-count trigger, use token threshold instead
+		contextWindowSize: contextWindowSize,
+		compressThreshold: defaultCompressThreshold,
+	}
+}
+
+// SetCompressThreshold sets the fraction of context window that triggers compression.
+// Default is 0.70 (70%).
+func (c *CompressMemory) SetCompressThreshold(threshold float64) {
+	if threshold > 0 && threshold < 1 {
+		c.compressThreshold = threshold
 	}
 }
 
 func (c *CompressMemory) Add(msg Message) {
 	c.messages = append(c.messages, msg)
-	if len(c.messages) > c.maxMessages {
+	if c.shouldCompress() {
 		c.compress()
 	}
+}
+
+// shouldCompress checks if compression should be triggered.
+func (c *CompressMemory) shouldCompress() bool {
+	// Check message count threshold
+	if len(c.messages) > c.maxMessages {
+		return true
+	}
+
+	// Check token-based threshold
+	if c.contextWindowSize > 0 {
+		estimated := c.EstimateTokens()
+		threshold := int(float64(c.contextWindowSize) * c.compressThreshold)
+		return estimated > threshold
+	}
+
+	return false
+}
+
+// EstimateTokens returns a rough estimate of total tokens in all messages.
+// Uses a simple heuristic: 1 token ≈ 4 characters.
+func (c *CompressMemory) EstimateTokens() int {
+	total := 0
+	for _, msg := range c.messages {
+		for _, content := range msg.Content {
+			switch v := content.(type) {
+			case TextContent:
+				total += len(v.Text) / estimatedCharsPerToken
+			case ToolUseContent:
+				total += len(v.Input)/estimatedCharsPerToken + 20 // name + overhead
+			case ToolResultContent:
+				total += len(v.Content) / estimatedCharsPerToken
+			}
+		}
+		total += 4 // per-message overhead (role, formatting)
+	}
+	return total
+}
+
+// TokenUsagePercent returns the estimated percentage of context window used.
+// Returns 0 if contextWindowSize is not set.
+func (c *CompressMemory) TokenUsagePercent() float64 {
+	if c.contextWindowSize <= 0 {
+		return 0
+	}
+	return float64(c.EstimateTokens()) / float64(c.contextWindowSize) * 100
 }
 
 func (c *CompressMemory) Messages() []Message {
