@@ -31,6 +31,7 @@ func (s *Session) Run(ctx context.Context, input string) (*RunResult, error) {
 	ctx = withParentSession(ctx, s)
 
 	var totalUsage Usage
+	consecutiveExplorationTurns := 0
 
 	for turn := range s.agent.maxTurns {
 		resp, err := s.step(ctx)
@@ -54,6 +55,31 @@ func (s *Session) Run(ctx context.Context, input string) (*RunResult, error) {
 				Turns:    turn + 1,
 				Usage:    totalUsage,
 			}, nil
+		}
+
+		// Check if any mutating tools were called
+		hasMutatingTool := false
+		for _, tu := range toolUses {
+			if tu.Name == "write_file" || tu.Name == "edit_file" {
+				hasMutatingTool = true
+				break
+			}
+		}
+
+		if hasMutatingTool {
+			consecutiveExplorationTurns = 0
+		} else {
+			consecutiveExplorationTurns++
+		}
+
+		// If stuck in exploration mode for too long, abort
+		if s.agent.maxExplorationTurns > 0 && consecutiveExplorationTurns >= s.agent.maxExplorationTurns {
+			return &RunResult{
+				Output:   fmt.Sprintf("Aborted: %d consecutive turns without making code changes (stuck in exploration mode)", consecutiveExplorationTurns),
+				Messages: s.memory.Messages(),
+				Turns:    turn + 1,
+				Usage:    totalUsage,
+			}, fmt.Errorf("stuck in exploration: %d turns without edit_file/write_file", consecutiveExplorationTurns)
 		}
 
 		results := s.executeTools(ctx, toolUses)

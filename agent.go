@@ -19,7 +19,8 @@ type Agent struct {
 	model          string
 	maxTurns       int
 	maxTokens      int
-	maxConcurrency int
+	maxConcurrency     int
+	maxExplorationTurns int // abort if this many consecutive turns have no edit/write (0 = disabled)
 	retry          *RetryConfig
 	hooks          Hooks
 	memoryFactory  func() Memory

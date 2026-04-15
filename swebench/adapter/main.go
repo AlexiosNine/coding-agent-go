@@ -198,6 +198,7 @@ Use the available tools to read files, search code, and make edits. When you're 
 			tool.Grep(),
 		),
 		cc.WithMaxTurns(25),
+		cc.WithMaxExplorationTurns(8),
 		cc.WithHooks(cc.Hooks{
 			BeforeToolCall: func(_ context.Context, name string, input json.RawMessage) error {
 				// Truncate long inputs for logging

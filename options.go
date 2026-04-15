@@ -64,6 +64,13 @@ func WithMaxConcurrency(n int) Option {
 	return func(a *Agent) { a.maxConcurrency = n }
 }
 
+// WithMaxExplorationTurns aborts the agent if it spends too many consecutive turns
+// reading/searching without making code changes (edit_file/write_file).
+// Set to 0 to disable (default).
+func WithMaxExplorationTurns(n int) Option {
+	return func(a *Agent) { a.maxExplorationTurns = n }
+}
+
 // WithRetry sets the retry configuration for provider calls.
 func WithRetry(cfg RetryConfig) Option {
 	return func(a *Agent) { a.retry = &cfg }
