@@ -215,6 +215,8 @@ Use the available tools to read files, search code, and make edits. When you're 
 		cc.WithModel(model),
 		cc.WithMaxTokens(102400),
 		cc.WithTokenAwareCompressMemory(200000, 10),
+		cc.WithToolOutputMaxSize(8000),
+		cc.WithExplorationBudget(15),
 		cc.WithTools(
 			tool.Shell(),
 			tool.ReadFile(),
