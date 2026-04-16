@@ -17,6 +17,7 @@ type Session struct {
 	memory         Memory
 	outputBuffer   *OutputBuffer
 	dedup          *MessageDeduplicator
+	readTracker    *ReadTracker
 	systemOverride string // if set, overrides agent.system for this session
 }
 
@@ -104,6 +105,14 @@ func (s *Session) Run(ctx context.Context, input string) (*RunResult, error) {
 
 		results := s.executeTools(ctx, toolUses)
 		s.memory.Add(NewToolResultMessage(results...))
+
+		// Detect repeated reads and nudge model to take action
+		if s.readTracker != nil {
+			nudge := s.readTracker.Track(toolUses)
+			if nudge != "" {
+				s.memory.Add(NewUserMessage(nudge))
+			}
+		}
 	}
 
 	return &RunResult{

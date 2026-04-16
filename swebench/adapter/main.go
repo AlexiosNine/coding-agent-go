@@ -140,6 +140,12 @@ Workflow suggestion:
 3. edit_file to make the fix
 4. Explain what you did (this ends the task)
 
+CRITICAL RULES:
+- Do NOT read the same file more than twice. Once you understand the code, make the change.
+- After reading 3-5 files, you MUST start editing. Do not keep exploring.
+- Use edit_file with exact old_string and new_string to make targeted changes.
+- Respond with text (no tool calls) when you are done - this signals completion.
+
 Use the available tools to read files, search code, and make edits. When you're done, I will generate a patch from your changes.`,
 		instance.Repo,
 		instance.BaseCommit,
@@ -198,7 +204,7 @@ Use the available tools to read files, search code, and make edits. When you're 
 			tool.Grep(),
 		),
 		cc.WithMaxTurns(25),
-		cc.WithMaxExplorationTurns(20),
+		cc.WithMaxExplorationTurns(0),
 		cc.WithHooks(cc.Hooks{
 			BeforeToolCall: func(_ context.Context, name string, input json.RawMessage) error {
 				// Truncate long inputs for logging

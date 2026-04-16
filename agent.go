@@ -60,6 +60,7 @@ func (a *Agent) NewSession() *Session {
 		memory:       a.memoryFactory(),
 		outputBuffer: NewOutputBuffer(50 << 20),
 		dedup:        NewMessageDeduplicator(),
+		readTracker:  NewReadTracker(),
 	}
 }
 
