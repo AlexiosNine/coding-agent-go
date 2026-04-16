@@ -148,6 +148,24 @@ CRITICAL RULES:
 - If edit_file fails with "old_string not found", check the hint in the error message.
 - Respond with text (no tool calls) when you are done - this signals completion.
 
+EXAMPLE of an efficient fix (completed in 10 turns):
+
+Issue: "ccode(sinc(x)) doesn't work - should output Piecewise C code"
+
+Turn 1: [parallel] grep "def _print_sinc" + read_file ccode.py:1-100
+  → Found: octave.py:395 has _print_sinc, ccode.py has no _print_sinc
+Turn 2: [parallel] read_file octave.py:395-400 + read_file ccode.py:100-300
+  → Saw octave's implementation and ccode's existing _print_ methods
+Turn 3: grep "class sinc" in functions/
+  → Found: trigonometric.py:1620
+Turn 4: read_file trigonometric.py:1620-1670
+  → Understood sinc class definition
+Turn 5-6: read_file ccode.py to find exact insertion point
+Turn 7: edit_file ccode.py → added _print_sinc method (SUCCESS)
+Turn 8: text response explaining the fix (DONE)
+
+Key pattern: explore (5 turns) → edit (1-2 turns) → done (1 turn)
+
 Use the available tools to read files, search code, and make edits. When you're done, I will generate a patch from your changes.`,
 		instance.Repo,
 		instance.BaseCommit,
