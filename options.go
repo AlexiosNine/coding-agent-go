@@ -214,3 +214,21 @@ func WithToolOutputMaxSize(maxSize int) Option {
 		a.toolOutputCompressor = NewToolOutputCompressor(maxSize)
 	}
 }
+
+// WithToolResultSummary enables structured summarization of tool outputs.
+// Long outputs are replaced with concise summaries (def/class extraction, match lists).
+// Originals remain in OutputBuffer for pagination.
+func WithToolResultSummary(maxLen int) Option {
+	return func(a *Agent) {
+		a.toolResultSummarizer = NewToolResultSummarizer(maxLen)
+	}
+}
+
+// WithSessionFactCache enables session-level fact accumulation.
+// Key facts (definitions, references, edit points) are extracted from tool outputs
+// and injected into the system prompt each turn.
+func WithSessionFactCache(maxFacts int) Option {
+	return func(a *Agent) {
+		a.sessionFactCacheSize = maxFacts
+	}
+}

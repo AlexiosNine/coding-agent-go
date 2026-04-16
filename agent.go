@@ -30,6 +30,8 @@ type Agent struct {
 	sandbox             *Sandbox   // file/command access restrictions
 	osSandbox           *OSSandbox // OS-level sandbox (opt-in)
 	toolOutputCompressor *ToolOutputCompressor
+	toolResultSummarizer *ToolResultSummarizer
+	sessionFactCacheSize int // 0 = disabled
 	closers             []io.Closer // MCP clients and other resources to clean up
 }
 
@@ -62,11 +64,15 @@ func (a *Agent) NewSession() *Session {
 		memory:       a.memoryFactory(),
 		outputBuffer: NewOutputBuffer(50 << 20),
 		dedup:        NewMessageDeduplicator(),
+		summarizer:   a.toolResultSummarizer,
 	}
 	if a.explorationBudget > 0 {
 		s.explorationBudget = NewExplorationBudget(a.explorationBudget)
 	} else {
 		s.readTracker = NewReadTracker()
+	}
+	if a.sessionFactCacheSize > 0 {
+		s.factCache = NewSessionFactCache(a.sessionFactCacheSize)
 	}
 	return s
 }

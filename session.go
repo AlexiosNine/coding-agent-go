@@ -19,7 +19,9 @@ type Session struct {
 	dedup             *MessageDeduplicator
 	readTracker       *ReadTracker       // legacy path (when explorationBudget is nil)
 	explorationBudget *ExplorationBudget // unified tracker; nil if not configured
-	systemOverride    string             // if set, overrides agent.system for this session
+	summarizer        *ToolResultSummarizer
+	factCache         *SessionFactCache
+	systemOverride    string // if set, overrides agent.system for this session
 }
 
 // Run executes the agent loop within this session's conversation context.
@@ -154,6 +156,12 @@ func (s *Session) step(ctx context.Context) (*ChatResponse, error) {
 	if s.systemOverride != "" {
 		system = s.systemOverride
 	}
+	// Inject session facts into system prompt
+	if s.factCache != nil {
+		if facts := s.factCache.Render(); facts != "" {
+			system += "\n" + facts
+		}
+	}
 
 	messages := s.memory.Messages()
 	if s.dedup != nil {
@@ -245,6 +253,16 @@ func (s *Session) executeSingleTool(ctx context.Context, tu ToolUseContent) Tool
 		output = s.agent.toolOutputCompressor.Compress(tu.Name, output)
 	}
 
+	// Extract facts before summarization
+	if s.factCache != nil && err == nil {
+		s.factCache.Extract(tu.Name, output)
+	}
+
+	// Summarize tool output for the model
+	if s.summarizer != nil && err == nil {
+		output = s.summarizer.Summarize(tu.Name, output)
+	}
+
 	if s.agent.hooks.AfterToolCall != nil {
 		s.agent.hooks.AfterToolCall(ctx, tu.Name, output, err)
 	}
@@ -316,6 +334,12 @@ func (s *Session) streamStep(ctx context.Context, out chan<- StreamEvent) (*Chat
 	system := s.agent.system
 	if s.systemOverride != "" {
 		system = s.systemOverride
+	}
+	// Inject session facts into system prompt
+	if s.factCache != nil {
+		if facts := s.factCache.Render(); facts != "" {
+			system += "\n" + facts
+		}
 	}
 
 	messages := s.memory.Messages()
