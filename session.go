@@ -2,8 +2,10 @@ package cc
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -65,6 +67,22 @@ func (s *Session) Run(ctx context.Context, input string) (*RunResult, error) {
 			if tu.Name == "write_file" || tu.Name == "edit_file" {
 				hasMutatingTool = true
 				break
+			}
+			// shell can also be mutating if it contains file-modifying commands
+			if tu.Name == "shell" {
+				var shellInput struct {
+					Command string `json:"command"`
+				}
+				if err := json.Unmarshal(tu.Input, &shellInput); err == nil {
+					cmd := shellInput.Command
+					if strings.Contains(cmd, ">") || strings.Contains(cmd, " -i") ||
+						strings.Contains(cmd, "open(") || strings.Contains(cmd, "write(") ||
+						strings.Contains(cmd, "git checkout") || strings.Contains(cmd, "mv ") ||
+						strings.Contains(cmd, "cp ") || strings.Contains(cmd, "mkdir ") {
+						hasMutatingTool = true
+						break
+					}
+				}
 			}
 		}
 
