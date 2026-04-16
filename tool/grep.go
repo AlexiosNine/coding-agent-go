@@ -15,7 +15,7 @@ import (
 type grepInput struct {
 	Pattern    string `json:"pattern" desc:"Search pattern (regex supported)"`
 	Path       string `json:"path" desc:"File or directory to search in"`
-	Recursive  bool   `json:"recursive" desc:"Search recursively in directories"`
+	Recursive  *bool  `json:"recursive,omitempty" desc:"Search recursively in directories (default: true)"`
 	MaxResults int    `json:"max_results" desc:"Maximum number of results to return (default 1000)"`
 	Offset     int    `json:"offset,omitempty" desc:"Optional: result offset for pagination (0-indexed)"`
 	Limit      int    `json:"limit,omitempty" desc:"Optional: maximum results per page (default 50)"`
@@ -64,12 +64,18 @@ func Grep() cc.Tool {
 			// Collect all matches into a slice
 			var matches []string
 
+			// Default recursive to true
+			recursive := true
+			if input.Recursive != nil {
+				recursive = *input.Recursive
+			}
+
 			if info.IsDir() {
 				err = filepath.WalkDir(absPath, func(path string, d os.DirEntry, err error) error {
 					if err != nil || d.IsDir() {
 						return err
 					}
-					if !input.Recursive && filepath.Dir(path) != absPath {
+					if !recursive && filepath.Dir(path) != absPath {
 						return filepath.SkipDir
 					}
 					if strings.HasPrefix(d.Name(), ".") {
