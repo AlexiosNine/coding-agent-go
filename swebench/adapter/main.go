@@ -295,6 +295,24 @@ Use the available tools to read files, search code, and make edits. When you're 
 		return "", fmt.Errorf("no changes made by agent")
 	}
 
+	// Run verification if verify script exists for this instance
+	verifyScript := filepath.Join(filepath.Dir(os.Args[0]), "..", "verify_patch.sh")
+	if _, err := os.Stat(verifyScript); err == nil {
+		log("=== Running patch verification ===")
+		patchFile := filepath.Join("/tmp", "swebench_patch_"+instance.InstanceID+".diff")
+		os.WriteFile(patchFile, diffOutput, 0644)
+
+		verifyCmd := exec.Command("bash", verifyScript, patchFile)
+		verifyCmd.Dir = workDir
+		verifyOutput, verifyErr := verifyCmd.CombinedOutput()
+		log("Verify output:\n%s", string(verifyOutput))
+		if verifyErr != nil {
+			log("WARNING: Patch verification FAILED: %v", verifyErr)
+		} else {
+			log("Patch verification PASSED")
+		}
+	}
+
 	return patch, nil
 }
 
