@@ -21,6 +21,8 @@ type Session struct {
 	explorationBudget *ExplorationBudget // unified tracker; nil if not configured
 	summarizer        *ToolResultSummarizer
 	factCache         *SessionFactCache
+	skillRegistry     *SkillRegistry
+	skillTool         Tool // use_skill tool instance
 	systemOverride    string // if set, overrides agent.system for this session
 }
 
@@ -57,6 +59,12 @@ func (s *Session) Run(ctx context.Context, input string) (*RunResult, error) {
 
 		toolUses := resp.ToolUses()
 		if len(toolUses) == 0 {
+			// Implicit skill matching on text responses
+			if s.skillRegistry != nil {
+				if skill := s.skillRegistry.Match(resp.Text()); skill != nil {
+					s.skillRegistry.Activate(skill.Meta.Name)
+				}
+			}
 			return &RunResult{
 				Output:   resp.Text(),
 				Messages: s.memory.Messages(),
@@ -162,17 +170,36 @@ func (s *Session) step(ctx context.Context) (*ChatResponse, error) {
 			system += "\n" + facts
 		}
 	}
+	// Inject skill summary + active instructions
+	if s.skillRegistry != nil {
+		if summary := s.skillRegistry.Summary(); summary != "" {
+			system += "\n" + summary
+		}
+		if inst := s.skillRegistry.ActiveInstructions(); inst != "" {
+			system += "\n" + inst
+		}
+	}
 
 	messages := s.memory.Messages()
 	if s.dedup != nil {
 		messages = s.dedup.Process(messages)
 	}
 
+	tools := s.agent.toolDefs()
+	// Append skill tool definition if present
+	if s.skillTool != nil {
+		tools = append(tools, ToolDef{
+			Name:        s.skillTool.Name(),
+			Description: s.skillTool.Description(),
+			InputSchema: s.skillTool.InputSchema(),
+		})
+	}
+
 	params := ChatParams{
 		Model:     s.agent.model,
 		System:    system,
 		Messages:  messages,
-		Tools:     s.agent.toolDefs(),
+		Tools:     tools,
 		MaxTokens: s.agent.maxTokens,
 	}
 
@@ -212,7 +239,12 @@ func (s *Session) executeTools(ctx context.Context, toolUses []ToolUseContent) [
 func (s *Session) executeSingleTool(ctx context.Context, tu ToolUseContent) ToolResultContent {
 	tool, ok := s.agent.tools[tu.Name]
 	if !ok {
-		return ToolResultContent{ToolUseID: tu.ID, Content: fmt.Sprintf("tool %q not found", tu.Name), IsError: true}
+		// Check session-level skill tool
+		if s.skillTool != nil && tu.Name == "use_skill" {
+			tool = s.skillTool
+		} else {
+			return ToolResultContent{ToolUseID: tu.ID, Content: fmt.Sprintf("tool %q not found", tu.Name), IsError: true}
+		}
 	}
 
 	// Approval check
@@ -341,17 +373,36 @@ func (s *Session) streamStep(ctx context.Context, out chan<- StreamEvent) (*Chat
 			system += "\n" + facts
 		}
 	}
+	// Inject skill summary + active instructions
+	if s.skillRegistry != nil {
+		if summary := s.skillRegistry.Summary(); summary != "" {
+			system += "\n" + summary
+		}
+		if inst := s.skillRegistry.ActiveInstructions(); inst != "" {
+			system += "\n" + inst
+		}
+	}
 
 	messages := s.memory.Messages()
 	if s.dedup != nil {
 		messages = s.dedup.Process(messages)
 	}
 
+	tools := s.agent.toolDefs()
+	// Append skill tool definition if present
+	if s.skillTool != nil {
+		tools = append(tools, ToolDef{
+			Name:        s.skillTool.Name(),
+			Description: s.skillTool.Description(),
+			InputSchema: s.skillTool.InputSchema(),
+		})
+	}
+
 	params := ChatParams{
 		Model:     s.agent.model,
 		System:    system,
 		Messages:  messages,
-		Tools:     s.agent.toolDefs(),
+		Tools:     tools,
 		MaxTokens: s.agent.maxTokens,
 	}
 

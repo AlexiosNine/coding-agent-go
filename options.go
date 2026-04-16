@@ -232,3 +232,26 @@ func WithSessionFactCache(maxFacts int) Option {
 		a.sessionFactCacheSize = maxFacts
 	}
 }
+
+// WithSkillDir scans a directory for SKILL.md files and registers them.
+// Each subdirectory containing a SKILL.md is treated as a skill.
+func WithSkillDir(dir string) Option {
+	return func(a *Agent) {
+		if a.skillRegistry == nil {
+			a.skillRegistry = NewSkillRegistry()
+		}
+		if err := a.skillRegistry.LoadDir(dir); err != nil {
+			panic(fmt.Sprintf("skill: load dir %q: %v", dir, err))
+		}
+	}
+}
+
+// WithSkill registers a code-defined skill with the agent.
+func WithSkill(skill *Skill) Option {
+	return func(a *Agent) {
+		if a.skillRegistry == nil {
+			a.skillRegistry = NewSkillRegistry()
+		}
+		a.skillRegistry.Register(skill)
+	}
+}

@@ -32,6 +32,7 @@ type Agent struct {
 	toolOutputCompressor *ToolOutputCompressor
 	toolResultSummarizer *ToolResultSummarizer
 	sessionFactCacheSize int // 0 = disabled
+	skillRegistry        *SkillRegistry
 	closers             []io.Closer // MCP clients and other resources to clean up
 }
 
@@ -73,6 +74,13 @@ func (a *Agent) NewSession() *Session {
 	}
 	if a.sessionFactCacheSize > 0 {
 		s.factCache = NewSessionFactCache(a.sessionFactCacheSize)
+	}
+	if a.skillRegistry != nil {
+		s.skillRegistry = a.skillRegistry
+		// Register use_skill tool if not already present
+		if _, exists := a.tools["use_skill"]; !exists {
+			s.skillTool = UseSkillTool(a.skillRegistry)
+		}
 	}
 	return s
 }
