@@ -64,7 +64,8 @@ func (s *ToolResultSummarizer) summarizeGrep(output string) string {
 	return result
 }
 
-// summarizeReadFile extracts file path, line range, and def/class signatures.
+// summarizeReadFile extracts file path, line range, and def/class signatures,
+// while preserving as much actual code content as possible.
 func (s *ToolResultSummarizer) summarizeReadFile(output string) string {
 	lines := strings.Split(output, "\n")
 
@@ -73,7 +74,6 @@ func (s *ToolResultSummarizer) summarizeReadFile(output string) string {
 	for i, line := range lines {
 		if defClassRe.MatchString(line) {
 			sig := strings.TrimSpace(line)
-			// Truncate long signatures
 			if len(sig) > 60 {
 				sig = sig[:60] + "..."
 			}
@@ -81,51 +81,36 @@ func (s *ToolResultSummarizer) summarizeReadFile(output string) string {
 		}
 	}
 
-	var b strings.Builder
-	fmt.Fprintf(&b, "[%d lines read]\n", len(lines))
-
+	// Build header with symbol index
+	var header strings.Builder
+	fmt.Fprintf(&header, "[%d lines read]\n", len(lines))
 	if len(signatures) > 0 {
-		b.WriteString("Symbols found:\n")
+		header.WriteString("Symbols found:\n")
 		for _, sig := range signatures {
-			if b.Len()+len(sig) > s.maxLen-50 {
-				b.WriteString("  ...\n")
+			if header.Len() > s.maxLen/4 {
+				header.WriteString("  ...\n")
 				break
 			}
-			b.WriteString(sig)
-			b.WriteByte('\n')
+			header.WriteString(sig)
+			header.WriteByte('\n')
 		}
 	}
 
-	// Keep first few and last few lines of actual content
-	contentBudget := s.maxLen - b.Len() - 30
-	if contentBudget > 100 {
-		headLines := contentBudget * 6 / 10 / 40 // ~40 chars per line
-		tailLines := contentBudget * 4 / 10 / 40
-		if headLines < 3 {
-			headLines = 3
-		}
-		if tailLines < 2 {
-			tailLines = 2
-		}
-		if headLines+tailLines < len(lines) {
-			b.WriteString("Content:\n")
-			for _, line := range lines[:headLines] {
-				b.WriteString(line)
-				b.WriteByte('\n')
-			}
-			b.WriteString("...\n")
-			for _, line := range lines[len(lines)-tailLines:] {
-				b.WriteString(line)
-				b.WriteByte('\n')
-			}
-		} else {
-			// Short enough, keep all
-			b.WriteString("Content:\n")
-			b.WriteString(strings.Join(lines, "\n"))
-		}
+	// Fill remaining budget with actual content (head + tail)
+	contentBudget := s.maxLen - header.Len()
+	if contentBudget < 100 {
+		contentBudget = 100
 	}
 
-	return strings.TrimRight(b.String(), "\n")
+	headerStr := header.String()
+	content := strings.Join(lines, "\n")
+	if len(content) <= contentBudget {
+		return headerStr + "Content:\n" + content
+	}
+
+	headSize := contentBudget * 6 / 10
+	tailSize := contentBudget - headSize
+	return headerStr + "Content:\n" + content[:headSize] + "\n...\n" + content[len(content)-tailSize:]
 }
 
 // summarizeShell keeps exit info + last N lines.
