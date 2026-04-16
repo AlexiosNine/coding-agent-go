@@ -22,7 +22,7 @@ type shellInput struct {
 // If an OSSandbox is available in the context, commands run with OS-level isolation.
 // Otherwise, commands run directly (subject to application-level sandbox checks).
 func Shell() cc.Tool {
-	return cc.NewFuncTool("shell", "Execute a shell command and return its output", func(ctx context.Context, in shellInput) (string, error) {
+	return cc.NewFuncTool("shell", "Execute a shell command and return its output. Supports pagination via offset and limit for large outputs. If a command returns many lines, use the same command with offset=N to see subsequent pages.", func(ctx context.Context, in shellInput) (string, error) {
 		limit := in.Limit
 		if limit <= 0 {
 			limit = 200
