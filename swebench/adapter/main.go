@@ -298,7 +298,8 @@ Use the available tools to read files, search code, and make edits. When you're 
 	}
 
 	// Run verification if verify script exists for this instance
-	verifyScript := filepath.Join(filepath.Dir(os.Args[0]), "..", "verify_patch.sh")
+	execPath, _ := os.Executable()
+	verifyScript := filepath.Join(filepath.Dir(execPath), "..", "verify_patch.sh")
 	if _, err := os.Stat(verifyScript); err == nil {
 		log("=== Running patch verification ===")
 		patchFile := filepath.Join("/tmp", "swebench_patch_"+instance.InstanceID+".diff")
