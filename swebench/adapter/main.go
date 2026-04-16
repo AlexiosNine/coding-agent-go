@@ -144,6 +144,8 @@ CRITICAL RULES:
 - Do NOT read the same file more than twice. Once you understand the code, make the change.
 - After reading 3-5 files, you MUST start editing. Do not keep exploring.
 - Use edit_file with exact old_string and new_string to make targeted changes.
+- edit_file returns success confirmation - do NOT re-read the file to verify changes.
+- If edit_file fails with "old_string not found", check the hint in the error message.
 - Respond with text (no tool calls) when you are done - this signals completion.
 
 Use the available tools to read files, search code, and make edits. When you're done, I will generate a patch from your changes.`,
