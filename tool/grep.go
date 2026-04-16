@@ -16,6 +16,7 @@ type grepInput struct {
 	Pattern    string `json:"pattern" desc:"Search pattern (regex supported)"`
 	Path       string `json:"path" desc:"File or directory to search in"`
 	Recursive  *bool  `json:"recursive,omitempty" desc:"Search recursively in directories (default: true)"`
+	MaxDepth   int    `json:"max_depth,omitempty" desc:"Maximum directory depth for recursive search (default 10, 0=unlimited)"`
 	MaxResults int    `json:"max_results" desc:"Maximum number of results to return (default 1000)"`
 	Offset     int    `json:"offset,omitempty" desc:"Optional: result offset for pagination (0-indexed)"`
 	Limit      int    `json:"limit,omitempty" desc:"Optional: maximum results per page (default 50)"`
@@ -70,11 +71,35 @@ func Grep() cc.Tool {
 				recursive = *input.Recursive
 			}
 
+			maxDepth := input.MaxDepth
+			if maxDepth <= 0 {
+				maxDepth = 10
+			}
+
 			if info.IsDir() {
+				baseDepth := strings.Count(absPath, string(filepath.Separator))
 				err = filepath.WalkDir(absPath, func(path string, d os.DirEntry, err error) error {
-					if err != nil || d.IsDir() {
+					if err != nil {
 						return err
 					}
+
+					// Skip noisy directories
+					if d.IsDir() {
+						name := d.Name()
+						if name == ".git" || name == "node_modules" || name == "__pycache__" ||
+							name == ".tox" || name == ".eggs" || name == "build" || name == "dist" {
+							return filepath.SkipDir
+						}
+						// Depth check
+						if recursive {
+							depth := strings.Count(path, string(filepath.Separator)) - baseDepth
+							if depth > maxDepth {
+								return filepath.SkipDir
+							}
+						}
+						return nil
+					}
+
 					if !recursive && filepath.Dir(path) != absPath {
 						return filepath.SkipDir
 					}
