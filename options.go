@@ -71,6 +71,15 @@ func WithMaxExplorationTurns(n int) Option {
 	return func(a *Agent) { a.maxExplorationTurns = n }
 }
 
+// WithExplorationBudget enables unified exploration tracking with a token budget.
+// Each read-only tool call costs 1 token; repeated reads cost 2 tokens.
+// Any mutating tool call resets the budget.
+// When budget is exhausted, a strong nudge is injected.
+// This replaces the separate ReadTracker and consecutiveExplorationTurns mechanisms.
+func WithExplorationBudget(budget int) Option {
+	return func(a *Agent) { a.explorationBudget = budget }
+}
+
 // WithRetry sets the retry configuration for provider calls.
 func WithRetry(cfg RetryConfig) Option {
 	return func(a *Agent) { a.retry = &cfg }

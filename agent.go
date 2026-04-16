@@ -22,6 +22,7 @@ type Agent struct {
 	maxTokens           int
 	maxConcurrency      int
 	maxExplorationTurns int // abort if this many consecutive turns have no edit/write (0 = disabled)
+	explorationBudget   int // exploration budget tokens (0 = disabled, use ReadTracker instead)
 	retry               *RetryConfig
 	hooks               Hooks
 	memoryFactory       func() Memory
@@ -56,13 +57,18 @@ func New(opts ...Option) *Agent {
 
 // NewSession creates a new conversation session with independent memory.
 func (a *Agent) NewSession() *Session {
-	return &Session{
+	s := &Session{
 		agent:        a,
 		memory:       a.memoryFactory(),
 		outputBuffer: NewOutputBuffer(50 << 20),
 		dedup:        NewMessageDeduplicator(),
-		readTracker:  NewReadTracker(),
 	}
+	if a.explorationBudget > 0 {
+		s.explorationBudget = NewExplorationBudget(a.explorationBudget)
+	} else {
+		s.readTracker = NewReadTracker()
+	}
+	return s
 }
 
 // Run is a convenience method for single-shot use.

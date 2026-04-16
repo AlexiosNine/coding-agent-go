@@ -13,12 +13,13 @@ import (
 // Session holds the state for a single conversation.
 // Create via Agent.NewSession().
 type Session struct {
-	agent          *Agent
-	memory         Memory
-	outputBuffer   *OutputBuffer
-	dedup          *MessageDeduplicator
-	readTracker    *ReadTracker
-	systemOverride string // if set, overrides agent.system for this session
+	agent             *Agent
+	memory            Memory
+	outputBuffer      *OutputBuffer
+	dedup             *MessageDeduplicator
+	readTracker       *ReadTracker       // legacy path (when explorationBudget is nil)
+	explorationBudget *ExplorationBudget // unified tracker; nil if not configured
+	systemOverride    string             // if set, overrides agent.system for this session
 }
 
 // Run executes the agent loop within this session's conversation context.
@@ -106,11 +107,35 @@ func (s *Session) Run(ctx context.Context, input string) (*RunResult, error) {
 		results := s.executeTools(ctx, toolUses)
 		s.memory.Add(NewToolResultMessage(results...))
 
-		// Detect repeated reads and nudge model to take action
-		if s.readTracker != nil {
-			nudge := s.readTracker.Track(toolUses)
-			if nudge != "" {
+		// Unified exploration budget (replaces both consecutiveExplorationTurns and readTracker)
+		if s.explorationBudget != nil {
+			if nudge := s.explorationBudget.Consume(toolUses); nudge != "" {
 				s.memory.Add(NewUserMessage(nudge))
+			}
+		} else {
+			// Legacy path: simple counter + ReadTracker
+			if hasMutatingTool {
+				consecutiveExplorationTurns = 0
+			} else {
+				consecutiveExplorationTurns++
+			}
+
+			// If stuck in exploration mode for too long, abort
+			if s.agent.maxExplorationTurns > 0 && consecutiveExplorationTurns >= s.agent.maxExplorationTurns {
+				return &RunResult{
+					Output:   fmt.Sprintf("Aborted: %d consecutive turns without making code changes (stuck in exploration mode)", consecutiveExplorationTurns),
+					Messages: s.memory.Messages(),
+					Turns:    turn + 1,
+					Usage:    totalUsage,
+				}, fmt.Errorf("stuck in exploration: %d turns without edit_file/write_file", consecutiveExplorationTurns)
+			}
+
+			// Detect repeated reads and nudge model to take action
+			if s.readTracker != nil {
+				nudge := s.readTracker.Track(toolUses)
+				if nudge != "" {
+					s.memory.Add(NewUserMessage(nudge))
+				}
 			}
 		}
 	}
