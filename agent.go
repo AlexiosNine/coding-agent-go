@@ -28,6 +28,7 @@ type Agent struct {
 	approver            Approver   // tool approval strategy
 	sandbox             *Sandbox   // file/command access restrictions
 	osSandbox           *OSSandbox // OS-level sandbox (opt-in)
+	toolOutputCompressor *ToolOutputCompressor
 	closers             []io.Closer // MCP clients and other resources to clean up
 }
 

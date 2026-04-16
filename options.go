@@ -197,3 +197,11 @@ func WithOSSandboxOption(allowedPaths ...string) Option {
 		a.osSandbox = NewOSSandbox(allowedPaths...)
 	}
 }
+
+// WithToolOutputMaxSize enables tool output compression.
+// Outputs exceeding maxSize chars are smart-truncated based on tool type.
+func WithToolOutputMaxSize(maxSize int) Option {
+	return func(a *Agent) {
+		a.toolOutputCompressor = NewToolOutputCompressor(maxSize)
+	}
+}

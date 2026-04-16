@@ -215,6 +215,11 @@ func (s *Session) executeSingleTool(ctx context.Context, tu ToolUseContent) Tool
 
 	output, err := tool.Execute(ctx, tu.Input)
 
+	// Apply output compression if configured
+	if s.agent.toolOutputCompressor != nil && err == nil {
+		output = s.agent.toolOutputCompressor.Compress(tu.Name, output)
+	}
+
 	if s.agent.hooks.AfterToolCall != nil {
 		s.agent.hooks.AfterToolCall(ctx, tu.Name, output, err)
 	}
