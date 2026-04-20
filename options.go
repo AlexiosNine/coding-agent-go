@@ -3,6 +3,7 @@ package cc
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/alexioschen/cc-connect/goagent/mcp"
 )
@@ -254,4 +255,9 @@ func WithSkill(skill *Skill) Option {
 		}
 		a.skillRegistry.Register(skill)
 	}
+}
+
+// WithTurnDelay sets a delay between agent turns for API rate limiting.
+func WithTurnDelay(d time.Duration) Option {
+	return func(a *Agent) { a.turnDelay = d }
 }

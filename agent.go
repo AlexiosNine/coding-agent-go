@@ -3,6 +3,7 @@ package cc
 import (
 	"context"
 	"io"
+	"time"
 )
 
 const (
@@ -33,6 +34,7 @@ type Agent struct {
 	toolResultSummarizer *ToolResultSummarizer
 	sessionFactCacheSize int // 0 = disabled
 	skillRegistry        *SkillRegistry
+	turnDelay            time.Duration // delay between turns for rate limiting (0 = disabled)
 	closers             []io.Closer // MCP clients and other resources to clean up
 }
 

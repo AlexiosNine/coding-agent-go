@@ -48,8 +48,8 @@ func (s *Session) Run(ctx context.Context, input string) (*RunResult, error) {
 
 	for turn := range s.agent.maxTurns {
 		// Rate limiting: sleep between turns to avoid API throttling
-		if turn > 0 {
-			time.Sleep(5 * time.Second)
+		if turn > 0 && s.agent.turnDelay > 0 {
+			time.Sleep(s.agent.turnDelay)
 		}
 
 		resp, err := s.step(ctx)
