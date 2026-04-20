@@ -210,11 +210,20 @@ Use the available tools to read files, search code, and make edits. When you're 
 
 	turnCount := 0
 
+	// Parse turn delay from environment
+	turnDelay := 15 * time.Second // default 15s for xf-yun rate limits
+	if d := os.Getenv("TURN_DELAY"); d != "" {
+		if parsed, err := time.ParseDuration(d); err == nil {
+			turnDelay = parsed
+		}
+	}
+
 	agent := cc.New(
 		cc.WithProvider(provider),
 		cc.WithModel(model),
 		cc.WithMaxTokens(102400),
-		cc.WithTokenAwareCompressMemory(200000, 10),
+		cc.WithTurnDelay(turnDelay),
+		cc.WithTokenAwareCompressMemory(20000, 3),
 		cc.WithToolOutputMaxSize(8000),
 		cc.WithToolResultSummary(2000),
 		cc.WithSessionFactCache(20),
