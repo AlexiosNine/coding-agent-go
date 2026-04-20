@@ -66,7 +66,41 @@ func ReadFile() cc.Tool {
 			overlap := overlapEnd - overlapStart
 			regionSize := effectiveEnd - effectiveStart
 			if regionSize > 0 && overlap > 0 && float64(overlap)/float64(regionSize) > 0.7 {
-				return fmt.Sprintf("[Already read %s lines %d-%d. Use edit_file to make changes, or read a different section.]", in.Path, prev.start+1, prev.end), nil
+				// Read the file to get new (non-overlapping) content
+				data, err := os.ReadFile(in.Path)
+				if err != nil {
+					return "", fmt.Errorf("read file %s: %w", in.Path, err)
+				}
+				fileLines := strings.Split(string(data), "\n")
+
+				var newContent strings.Builder
+				fmt.Fprintf(&newContent, "[Already read %s lines %d-%d]", in.Path, prev.start+1, prev.end)
+
+				// Output only the new lines not covered by previous read
+				if effectiveStart < prev.start && effectiveStart < len(fileLines) {
+					end := prev.start
+					if end > len(fileLines) {
+						end = len(fileLines)
+					}
+					fmt.Fprintf(&newContent, "\nNew lines %d-%d:\n%s", effectiveStart+1, end, strings.Join(fileLines[effectiveStart:end], "\n"))
+				}
+				if effectiveEnd > prev.end && prev.end < len(fileLines) {
+					start := prev.end
+					end := effectiveEnd
+					if end > len(fileLines) {
+						end = len(fileLines)
+					}
+					fmt.Fprintf(&newContent, "\nNew lines %d-%d:\n%s", start+1, end, strings.Join(fileLines[start:end], "\n"))
+				}
+
+				// If no new content at all, just return the reminder
+				if !strings.Contains(newContent.String(), "New lines") {
+					newContent.WriteString("\nUse edit_file to make changes, or read a different section.")
+				}
+
+				// Update history to cover the full range
+				readHistory = append(readHistory, readRegion{path: in.Path, start: effectiveStart, end: effectiveEnd})
+				return newContent.String(), nil
 			}
 		}
 
