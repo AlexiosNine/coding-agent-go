@@ -65,6 +65,7 @@ func (s *Session) Run(ctx context.Context, input string) (*RunResult, error) {
 			if s.skillRegistry != nil {
 				if skill := s.skillRegistry.Match(resp.Text(), s.activeSkills); skill != nil {
 					s.activateSkill(skill.Meta.Name)
+					s.memory.Add(NewUserMessage(fmt.Sprintf("[System: Skill %q auto-activated. Follow its instructions.]", skill.Meta.Name)))
 					continue // next turn will see skill instructions in system prompt
 				}
 			}

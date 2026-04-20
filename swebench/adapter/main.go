@@ -226,6 +226,7 @@ Use the available tools to read files, search code, and make edits. When you're 
 			tool.EditFile(),
 			tool.ListFiles(),
 			tool.Grep(),
+			tool.Search(),
 		),
 		cc.WithMaxTurns(25),
 		cc.WithMaxExplorationTurns(0),

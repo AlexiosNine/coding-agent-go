@@ -35,6 +35,9 @@ func UseSkillTool(registry *SkillRegistry, session *Session) Tool {
 
 				// Get instructions (will lazy load if needed)
 				inst := registry.GetInstructions([]string{input.Name})
+				if inst == "" {
+					return "", fmt.Errorf("failed to load instructions for skill %q", input.Name)
+				}
 				return fmt.Sprintf("Skill %q activated. Follow its instructions:\n%s", input.Name, inst), nil
 
 			case "deactivate":
