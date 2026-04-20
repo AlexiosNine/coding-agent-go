@@ -67,7 +67,7 @@ func LSP() cc.Tool {
 			case ModeCLI:
 				return executeCLI(ctx, cfg, root, input.Operation, absFile, input.Line, input.Column, input.Query)
 			case ModeJSONRPC:
-				return "", fmt.Errorf("%s requires JSON-RPC mode (not yet implemented, use shell tool to call %s directly)", cfg.Binary, cfg.Binary)
+				return executeJSONRPC(ctx, cfg, root, input.Operation, absFile, input.Line, input.Column, input.Query)
 			default:
 				return "", fmt.Errorf("unknown server mode for %s", lang)
 			}
