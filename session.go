@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -46,6 +47,11 @@ func (s *Session) Run(ctx context.Context, input string) (*RunResult, error) {
 	consecutiveExplorationTurns := 0
 
 	for turn := range s.agent.maxTurns {
+		// Rate limiting: sleep between turns to avoid API throttling
+		if turn > 0 {
+			time.Sleep(5 * time.Second)
+		}
+
 		resp, err := s.step(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("turn %d: %w", turn+1, err)

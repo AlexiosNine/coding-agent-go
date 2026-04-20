@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 // Fact represents a single piece of knowledge extracted from tool output.
@@ -15,6 +16,7 @@ type Fact struct {
 // SessionFactCache accumulates reusable facts from tool outputs within a session.
 // Facts are injected into the system prompt so the model doesn't need to re-read files.
 type SessionFactCache struct {
+	mu       sync.RWMutex
 	facts    []Fact
 	maxFacts int
 	seen     map[string]bool // dedup by content
@@ -104,6 +106,9 @@ func (c *SessionFactCache) extractEditFile(output string) {
 }
 
 func (c *SessionFactCache) addFact(f Fact) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	if c.seen[f.Content] {
 		return
 	}
@@ -119,6 +124,9 @@ func (c *SessionFactCache) addFact(f Fact) {
 
 // Render formats all facts as a string suitable for system prompt injection.
 func (c *SessionFactCache) Render() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
 	if len(c.facts) == 0 {
 		return ""
 	}
@@ -132,5 +140,10 @@ func (c *SessionFactCache) Render() string {
 
 // Facts returns the current facts (for testing).
 func (c *SessionFactCache) Facts() []Fact {
-	return c.facts
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	result := make([]Fact, len(c.facts))
+	copy(result, c.facts)
+	return result
 }
