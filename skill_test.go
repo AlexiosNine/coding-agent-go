@@ -19,65 +19,50 @@ func TestSkillRegistry_Register(t *testing.T) {
 	}
 }
 
-func TestSkillRegistry_ActivateDeactivate(t *testing.T) {
+func TestSkillRegistry_GetSkill(t *testing.T) {
+	r := NewSkillRegistry()
+	r.Register(&Skill{
+		Meta:         SkillMeta{Name: "test", Description: "A test skill"},
+		Instructions: "Do the thing",
+	})
+
+	skill, ok := r.GetSkill("test")
+	if !ok || skill.Meta.Name != "test" {
+		t.Error("expected to get skill 'test'")
+	}
+
+	_, ok = r.GetSkill("nonexistent")
+	if ok {
+		t.Error("expected false for nonexistent skill")
+	}
+}
+
+func TestSkillRegistry_GetInstructions(t *testing.T) {
 	r := NewSkillRegistry()
 	r.Register(&Skill{
 		Meta:         SkillMeta{Name: "s1", Description: "Skill 1"},
 		Instructions: "Instructions for s1",
 	})
+	r.Register(&Skill{
+		Meta:         SkillMeta{Name: "s2", Description: "Skill 2"},
+		Instructions: "Instructions for s2",
+	})
 
-	if err := r.Activate("s1"); err != nil {
-		t.Fatalf("activate: %v", err)
-	}
-	if active := r.ActiveSkills(); len(active) != 1 || active[0] != "s1" {
-		t.Errorf("expected [s1] active, got %v", active)
-	}
-
-	// Idempotent
-	if err := r.Activate("s1"); err != nil {
-		t.Fatalf("re-activate: %v", err)
-	}
-	if len(r.ActiveSkills()) != 1 {
-		t.Error("expected idempotent activation")
+	// No active skills
+	if r.GetInstructions([]string{}) != "" {
+		t.Error("expected empty when no skills requested")
 	}
 
-	r.Deactivate("s1")
-	if len(r.ActiveSkills()) != 0 {
-		t.Error("expected empty after deactivate")
-	}
-}
-
-func TestSkillRegistry_ActivateNotFound(t *testing.T) {
-	r := NewSkillRegistry()
-	if err := r.Activate("nonexistent"); err == nil {
-		t.Error("expected error for nonexistent skill")
-	}
-}
-
-func TestSkillRegistry_MaxActive(t *testing.T) {
-	r := NewSkillRegistry()
-	r.maxActive = 2
-
-	for _, name := range []string{"a", "b", "c"} {
-		r.Register(&Skill{
-			Meta:         SkillMeta{Name: name, Description: name},
-			Instructions: "inst " + name,
-		})
+	// Single skill
+	inst := r.GetInstructions([]string{"s1"})
+	if !containsStr(inst, "Instructions for s1") {
+		t.Errorf("expected s1 instructions, got: %s", inst)
 	}
 
-	r.Activate("a")
-	r.Activate("b")
-	r.Activate("c") // should evict "a"
-
-	active := r.ActiveSkills()
-	if len(active) != 2 {
-		t.Fatalf("expected 2 active, got %d: %v", len(active), active)
-	}
-	// "a" should be evicted
-	for _, n := range active {
-		if n == "a" {
-			t.Error("expected 'a' to be evicted")
-		}
+	// Multiple skills
+	inst = r.GetInstructions([]string{"s1", "s2"})
+	if !containsStr(inst, "Instructions for s1") || !containsStr(inst, "Instructions for s2") {
+		t.Errorf("expected both instructions, got: %s", inst)
 	}
 }
 
@@ -103,24 +88,86 @@ func TestSkillRegistry_Match(t *testing.T) {
 	})
 
 	// Should match db-migrate
-	if s := r.Match("I need to run a migration"); s == nil || s.Meta.Name != "db-migrate" {
+	if s := r.Match("I need to run a migration", []string{}); s == nil || s.Meta.Name != "db-migrate" {
 		t.Errorf("expected db-migrate match, got %v", s)
 	}
 
 	// Should not match deploy (auto_match=false)
-	if s := r.Match("deploy to production"); s != nil {
+	if s := r.Match("deploy to production", []string{}); s != nil {
 		t.Errorf("expected no match for deploy, got %s", s.Meta.Name)
 	}
 
 	// No match
-	if s := r.Match("hello world"); s != nil {
+	if s := r.Match("hello world", []string{}); s != nil {
 		t.Errorf("expected no match, got %s", s.Meta.Name)
 	}
 
 	// Already active skill should not re-match
-	r.Activate("db-migrate")
-	if s := r.Match("run migration again"); s != nil {
+	if s := r.Match("run migration again", []string{"db-migrate"}); s != nil {
 		t.Errorf("expected no match for already active skill, got %v", s)
+	}
+}
+
+func TestSkillRegistry_Match_WordBoundary(t *testing.T) {
+	r := NewSkillRegistry()
+	r.Register(&Skill{
+		Meta: SkillMeta{
+			Name:        "fix-bug",
+			Description: "Fix bugs",
+			AutoMatch:   true,
+			Keywords:    []string{"fix"},
+		},
+		Instructions: "Fix the bug",
+	})
+
+	// Should match "fix" as whole word
+	if s := r.Match("I need to fix this bug", []string{}); s == nil {
+		t.Error("expected match for 'fix this'")
+	}
+
+	// Should NOT match "fix" inside "prefix"
+	if s := r.Match("add a prefix to the variable", []string{}); s != nil {
+		t.Errorf("expected no match for 'prefix', got %s", s.Meta.Name)
+	}
+
+	// Should match at start
+	if s := r.Match("fix: update config", []string{}); s == nil {
+		t.Error("expected match for 'fix:' at start")
+	}
+
+	// Should match at end
+	if s := r.Match("apply the fix", []string{}); s == nil {
+		t.Error("expected match for 'fix' at end")
+	}
+}
+
+func TestSkillRegistry_Match_Priority(t *testing.T) {
+	r := NewSkillRegistry()
+	r.Register(&Skill{
+		Meta: SkillMeta{
+			Name:        "low-priority",
+			Description: "Low",
+			AutoMatch:   true,
+			Keywords:    []string{"test"},
+			Priority:    1,
+		},
+		Instructions: "Low priority",
+	})
+	r.Register(&Skill{
+		Meta: SkillMeta{
+			Name:        "high-priority",
+			Description: "High",
+			AutoMatch:   true,
+			Keywords:    []string{"test"},
+			Priority:    10,
+		},
+		Instructions: "High priority",
+	})
+
+	// Should match high-priority (higher priority value)
+	s := r.Match("run test", []string{})
+	if s == nil || s.Meta.Name != "high-priority" {
+		t.Errorf("expected high-priority match, got %v", s)
 	}
 }
 
@@ -137,31 +184,6 @@ func TestSkillRegistry_Summary(t *testing.T) {
 	}
 	if !containsStr(summary, "commit") || !containsStr(summary, "Git commit workflow") {
 		t.Errorf("summary missing skill info: %s", summary)
-	}
-}
-
-func TestSkillRegistry_ActiveInstructions(t *testing.T) {
-	r := NewSkillRegistry()
-	r.Register(&Skill{
-		Meta:         SkillMeta{Name: "s1", Description: "S1"},
-		Instructions: "Do step 1\nDo step 2",
-	})
-	r.Register(&Skill{
-		Meta:         SkillMeta{Name: "s2", Description: "S2"},
-		Instructions: "Do step A",
-	})
-
-	// No active skills
-	if r.ActiveInstructions() != "" {
-		t.Error("expected empty when no skills active")
-	}
-
-	r.Activate("s1")
-	r.Activate("s2")
-
-	inst := r.ActiveInstructions()
-	if !containsStr(inst, "Do step 1") || !containsStr(inst, "Do step A") {
-		t.Errorf("expected both skill instructions, got: %s", inst)
 	}
 }
 
@@ -194,11 +216,22 @@ keywords: ["test", "demo"]
 		t.Fatalf("expected 1 skill, got %d", len(names))
 	}
 
-	// Activate and check instructions
-	r.Activate("my-skill")
-	inst := r.ActiveInstructions()
+	// Check lazy loading: instructions should be empty initially
+	skill, _ := r.GetSkill("my-skill")
+	if skill.Instructions != "" {
+		t.Error("expected empty instructions before lazy load")
+	}
+
+	// Get instructions triggers lazy load
+	inst := r.GetInstructions([]string{"my-skill"})
 	if !containsStr(inst, "Do the thing") {
 		t.Errorf("expected instructions loaded, got: %s", inst)
+	}
+
+	// Now instructions should be loaded
+	skill, _ = r.GetSkill("my-skill")
+	if !skill.loaded {
+		t.Error("expected skill to be marked as loaded")
 	}
 }
 
@@ -223,11 +256,35 @@ File instructions
 	// Then load dir — should NOT overwrite
 	r.LoadDir(dir)
 
-	r.Activate("override")
-	inst := r.ActiveInstructions()
+	inst := r.GetInstructions([]string{"override"})
 	if !containsStr(inst, "Code instructions") {
 		t.Errorf("expected code version to win, got: %s", inst)
 	}
+}
+
+func TestSkillRegistry_ConcurrentAccess(t *testing.T) {
+	r := NewSkillRegistry()
+
+	// Concurrent Register + GetSkill
+	done := make(chan bool, 2)
+	go func() {
+		for i := 0; i < 100; i++ {
+			r.Register(&Skill{
+				Meta:         SkillMeta{Name: "test", Description: "Test"},
+				Instructions: "Test instructions",
+			})
+		}
+		done <- true
+	}()
+	go func() {
+		for i := 0; i < 100; i++ {
+			r.GetSkill("test")
+		}
+		done <- true
+	}()
+
+	<-done
+	<-done
 }
 
 func TestParseSkillMD(t *testing.T) {
@@ -236,6 +293,7 @@ name: test-skill
 description: "A test"
 auto_match: true
 keywords: ["foo", "bar"]
+priority: 5
 ---
 
 ## Steps
@@ -254,13 +312,16 @@ keywords: ["foo", "bar"]
 		t.Errorf("description = %q", meta.Description)
 	}
 	if !meta.AutoMatch {
-		t.Error("expected auto_match=true")
+		t.Error("expected auto_match = true")
 	}
 	if len(meta.Keywords) != 2 || meta.Keywords[0] != "foo" || meta.Keywords[1] != "bar" {
 		t.Errorf("keywords = %v", meta.Keywords)
 	}
+	if meta.Priority != 5 {
+		t.Errorf("priority = %d", meta.Priority)
+	}
 	if !containsStr(body, "First step") {
-		t.Errorf("body = %q", body)
+		t.Errorf("body missing content: %s", body)
 	}
 }
 
@@ -276,13 +337,15 @@ Body
 	}
 }
 
-func containsStr(s, sub string) bool {
-	return len(s) >= len(sub) && findStr(s, sub)
+func containsStr(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) &&
+		(s[:len(substr)] == substr || s[len(s)-len(substr):] == substr ||
+		len(s) > len(substr)+1 && containsSubstr(s, substr)))
 }
 
-func findStr(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
+func containsSubstr(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
 			return true
 		}
 	}

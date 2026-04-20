@@ -11,7 +11,7 @@ type useSkillInput struct {
 }
 
 // UseSkillTool creates a tool that lets the model activate/deactivate skills.
-func UseSkillTool(registry *SkillRegistry) Tool {
+func UseSkillTool(registry *SkillRegistry, session *Session) Tool {
 	return NewFuncTool(
 		"use_skill",
 		"Activate or deactivate a skill. Use 'activate' to load a skill's instructions and tools. Use 'deactivate' to release them. Available skills are listed in the system prompt.",
@@ -27,14 +27,18 @@ func UseSkillTool(registry *SkillRegistry) Tool {
 
 			switch action {
 			case "activate":
-				if err := registry.Activate(input.Name); err != nil {
-					return "", err
+				_, ok := registry.GetSkill(input.Name)
+				if !ok {
+					return "", fmt.Errorf("skill %q not found", input.Name)
 				}
-				skill := registry.skills[input.Name]
-				return fmt.Sprintf("Skill %q activated. Follow its instructions:\n%s", input.Name, skill.Instructions), nil
+				session.activateSkill(input.Name)
+
+				// Get instructions (will lazy load if needed)
+				inst := registry.GetInstructions([]string{input.Name})
+				return fmt.Sprintf("Skill %q activated. Follow its instructions:\n%s", input.Name, inst), nil
 
 			case "deactivate":
-				registry.Deactivate(input.Name)
+				session.deactivateSkill(input.Name)
 				return fmt.Sprintf("Skill %q deactivated.", input.Name), nil
 
 			default:

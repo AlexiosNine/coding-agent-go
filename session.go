@@ -22,8 +22,10 @@ type Session struct {
 	summarizer        *ToolResultSummarizer
 	factCache         *SessionFactCache
 	skillRegistry     *SkillRegistry
-	skillTool         Tool // use_skill tool instance
-	systemOverride    string // if set, overrides agent.system for this session
+	skillTool         Tool     // use_skill tool instance
+	activeSkills      []string // session-local active skill names
+	maxActiveSkills   int      // max concurrent active skills (default 3)
+	systemOverride    string   // if set, overrides agent.system for this session
 }
 
 // Run executes the agent loop within this session's conversation context.
@@ -61,8 +63,9 @@ func (s *Session) Run(ctx context.Context, input string) (*RunResult, error) {
 		if len(toolUses) == 0 {
 			// Implicit skill matching on text responses
 			if s.skillRegistry != nil {
-				if skill := s.skillRegistry.Match(resp.Text()); skill != nil {
-					s.skillRegistry.Activate(skill.Meta.Name)
+				if skill := s.skillRegistry.Match(resp.Text(), s.activeSkills); skill != nil {
+					s.activateSkill(skill.Meta.Name)
+					continue // next turn will see skill instructions in system prompt
 				}
 			}
 			return &RunResult{
@@ -175,7 +178,7 @@ func (s *Session) step(ctx context.Context) (*ChatResponse, error) {
 		if summary := s.skillRegistry.Summary(); summary != "" {
 			system += "\n" + summary
 		}
-		if inst := s.skillRegistry.ActiveInstructions(); inst != "" {
+		if inst := s.skillRegistry.GetInstructions(s.activeSkills); inst != "" {
 			system += "\n" + inst
 		}
 	}
@@ -315,6 +318,34 @@ func (s *Session) ClearMemory() {
 	s.memory.Clear()
 }
 
+// activateSkill adds a skill to the session's active list.
+// Implements LRU eviction if maxActiveSkills is exceeded.
+func (s *Session) activateSkill(name string) {
+	// Check if already active
+	for _, n := range s.activeSkills {
+		if n == name {
+			return // idempotent
+		}
+	}
+
+	// Evict oldest if at capacity
+	if len(s.activeSkills) >= s.maxActiveSkills {
+		s.activeSkills = s.activeSkills[1:]
+	}
+
+	s.activeSkills = append(s.activeSkills, name)
+}
+
+// deactivateSkill removes a skill from the session's active list.
+func (s *Session) deactivateSkill(name string) {
+	for i, n := range s.activeSkills {
+		if n == name {
+			s.activeSkills = append(s.activeSkills[:i], s.activeSkills[i+1:]...)
+			return
+		}
+	}
+}
+
 // RunStream executes the agent loop with streaming output.
 // If the provider implements StreamProvider, tokens are streamed as they arrive.
 // Otherwise, falls back to Chat() and emits the complete response as events.
@@ -378,7 +409,7 @@ func (s *Session) streamStep(ctx context.Context, out chan<- StreamEvent) (*Chat
 		if summary := s.skillRegistry.Summary(); summary != "" {
 			system += "\n" + summary
 		}
-		if inst := s.skillRegistry.ActiveInstructions(); inst != "" {
+		if inst := s.skillRegistry.GetInstructions(s.activeSkills); inst != "" {
 			system += "\n" + inst
 		}
 	}

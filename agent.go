@@ -77,9 +77,10 @@ func (a *Agent) NewSession() *Session {
 	}
 	if a.skillRegistry != nil {
 		s.skillRegistry = a.skillRegistry
+		s.maxActiveSkills = 3 // default max concurrent active skills
 		// Register use_skill tool if not already present
 		if _, exists := a.tools["use_skill"]; !exists {
-			s.skillTool = UseSkillTool(a.skillRegistry)
+			s.skillTool = UseSkillTool(a.skillRegistry, s)
 		}
 	}
 	return s

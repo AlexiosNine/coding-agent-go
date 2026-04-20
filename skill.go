@@ -14,6 +14,7 @@ type SkillMeta struct {
 	Description string   `yaml:"description"`
 	AutoMatch   bool     `yaml:"auto_match"`
 	Keywords    []string `yaml:"keywords"`
+	Priority    int      `yaml:"priority"` // higher priority matched first (default 0)
 }
 
 // Skill represents a reusable capability or workflow that can be activated on demand.
@@ -25,19 +26,19 @@ type Skill struct {
 	loaded       bool   // whether Instructions has been loaded from file
 }
 
-// SkillRegistry manages skill discovery, matching, and activation lifecycle.
+// SkillRegistry manages skill discovery and metadata.
+// Active state is managed per-session, not globally.
 type SkillRegistry struct {
-	mu        sync.RWMutex
-	skills    map[string]*Skill
-	active    []string // ordered list of active skill names
-	maxActive int
+	mu           sync.RWMutex
+	skills       map[string]*Skill
+	orderedNames []string // deterministic iteration order for Match
 }
 
-// NewSkillRegistry creates a registry with default settings.
+// NewSkillRegistry creates a registry.
 func NewSkillRegistry() *SkillRegistry {
 	return &SkillRegistry{
-		skills:    make(map[string]*Skill),
-		maxActive: 3,
+		skills:       make(map[string]*Skill),
+		orderedNames: []string{},
 	}
 }
 
@@ -46,11 +47,16 @@ func (r *SkillRegistry) Register(skill *Skill) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	skill.loaded = true // code-registered skills are always fully loaded
+
+	// Add to ordered list if new
+	if _, exists := r.skills[skill.Meta.Name]; !exists {
+		r.orderedNames = append(r.orderedNames, skill.Meta.Name)
+	}
 	r.skills[skill.Meta.Name] = skill
 }
 
 // LoadDir scans a directory for SKILL.md files and registers them.
-// Only parses frontmatter at this stage; instructions are lazy-loaded on activation.
+// Only parses frontmatter; instructions are lazy-loaded on first access.
 func (r *SkillRegistry) LoadDir(dir string) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -74,7 +80,7 @@ func (r *SkillRegistry) LoadDir(dir string) error {
 			continue
 		}
 
-		meta, body, err := parseSkillMD(string(data))
+		meta, _, err := parseSkillMD(string(data))
 		if err != nil {
 			continue // skip malformed skills
 		}
@@ -84,89 +90,129 @@ func (r *SkillRegistry) LoadDir(dir string) error {
 		if _, exists := r.skills[meta.Name]; !exists {
 			r.skills[meta.Name] = &Skill{
 				Meta:         meta,
-				Instructions: body,
+				Instructions: "", // lazy load
 				filePath:     skillFile,
-				loaded:       true, // we already have the body
+				loaded:       false,
 			}
+			r.orderedNames = append(r.orderedNames, meta.Name)
 		}
 		r.mu.Unlock()
 	}
 	return nil
 }
 
-// Activate loads full instructions and registers skill tools.
-// If maxActive is exceeded, the oldest active skill is deactivated.
-func (r *SkillRegistry) Activate(name string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
+// GetSkill returns a skill by name with thread-safe access.
+func (r *SkillRegistry) GetSkill(name string) (*Skill, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	skill, ok := r.skills[name]
-	if !ok {
-		return fmt.Errorf("skill %q not found", name)
+	return skill, ok
+}
+
+// loadInstructions loads the full instructions from file if not already loaded.
+func (r *SkillRegistry) loadInstructions(skill *Skill) error {
+	if skill.loaded || skill.filePath == "" {
+		return nil
 	}
 
-	// Already active — idempotent
-	for _, n := range r.active {
-		if n == name {
-			return nil
-		}
+	data, err := os.ReadFile(skill.filePath)
+	if err != nil {
+		return fmt.Errorf("read skill file %s: %w", skill.filePath, err)
 	}
 
-	// Evict oldest if at capacity
-	if len(r.active) >= r.maxActive {
-		r.deactivateLocked(r.active[0])
+	_, body, err := parseSkillMD(string(data))
+	if err != nil {
+		return fmt.Errorf("parse skill file %s: %w", skill.filePath, err)
 	}
 
-	r.active = append(r.active, name)
-	_ = skill // instructions already loaded
+	skill.Instructions = body
+	skill.loaded = true
 	return nil
 }
 
-// Deactivate removes a skill from active set.
-func (r *SkillRegistry) Deactivate(name string) {
+// GetInstructions returns the combined instructions for the given skill names.
+// Lazy-loads file-based skills on first access.
+func (r *SkillRegistry) GetInstructions(names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.deactivateLocked(name)
-}
 
-func (r *SkillRegistry) deactivateLocked(name string) {
-	for i, n := range r.active {
-		if n == name {
-			r.active = append(r.active[:i], r.active[i+1:]...)
-			return
+	var b strings.Builder
+	for _, name := range names {
+		skill, ok := r.skills[name]
+		if !ok {
+			continue
 		}
+		// Lazy load if needed
+		if err := r.loadInstructions(skill); err != nil {
+			continue
+		}
+		fmt.Fprintf(&b, "[Active skill: %s]\n%s\n\n", name, skill.Instructions)
 	}
+	return b.String()
 }
 
 // Match checks if any auto-match skill's keywords appear in the text.
-// Returns the first matching skill, or nil.
-func (r *SkillRegistry) Match(text string) *Skill {
+// Returns the highest-priority matching skill, or nil.
+// Uses word-boundary matching to avoid false positives.
+func (r *SkillRegistry) Match(text string, activeSkills []string) *Skill {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	lower := strings.ToLower(text)
-	for _, skill := range r.skills {
+
+	// Build list of matching skills with priorities
+	type match struct {
+		skill    *Skill
+		priority int
+	}
+	var matches []match
+
+	for _, name := range r.orderedNames {
+		skill := r.skills[name]
 		if !skill.Meta.AutoMatch {
 			continue
 		}
+
 		// Skip already active
-		for _, n := range r.active {
-			if n == skill.Meta.Name {
-				goto next
+		isActive := false
+		for _, activeName := range activeSkills {
+			if activeName == name {
+				isActive = true
+				break
 			}
 		}
+		if isActive {
+			continue
+		}
+
+		// Check keywords with word boundaries
 		for _, kw := range skill.Meta.Keywords {
-			if strings.Contains(lower, strings.ToLower(kw)) {
-				return skill
+			if matchKeyword(lower, strings.ToLower(kw)) {
+				matches = append(matches, match{skill: skill, priority: skill.Meta.Priority})
+				break
 			}
 		}
-	next:
 	}
-	return nil
+
+	if len(matches) == 0 {
+		return nil
+	}
+
+	// Return highest priority (or first if tied)
+	best := matches[0]
+	for _, m := range matches[1:] {
+		if m.priority > best.priority {
+			best = m
+		}
+	}
+	return best.skill
 }
 
 // Summary returns a concise listing of all skills for system prompt injection.
-// Only includes name + description (~50 tokens per skill).
 func (r *SkillRegistry) Summary() string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -177,48 +223,53 @@ func (r *SkillRegistry) Summary() string {
 
 	var b strings.Builder
 	b.WriteString("[Available skills]\n")
-	for _, skill := range r.skills {
+	for _, name := range r.orderedNames {
+		skill := r.skills[name]
 		fmt.Fprintf(&b, "- %s: %s\n", skill.Meta.Name, skill.Meta.Description)
 	}
 	b.WriteString("Use the use_skill tool to activate a skill.\n")
 	return b.String()
 }
 
-// ActiveInstructions returns the combined instructions of all active skills.
-func (r *SkillRegistry) ActiveInstructions() string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	if len(r.active) == 0 {
-		return ""
-	}
-
-	var b strings.Builder
-	for _, name := range r.active {
-		skill := r.skills[name]
-		fmt.Fprintf(&b, "[Active skill: %s]\n%s\n\n", name, skill.Instructions)
-	}
-	return b.String()
-}
-
-// ActiveSkills returns the names of currently active skills.
-func (r *SkillRegistry) ActiveSkills() []string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	result := make([]string, len(r.active))
-	copy(result, r.active)
-	return result
-}
-
 // ListSkills returns all registered skill names.
 func (r *SkillRegistry) ListSkills() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	names := make([]string, 0, len(r.skills))
-	for name := range r.skills {
-		names = append(names, name)
-	}
+	names := make([]string, len(r.orderedNames))
+	copy(names, r.orderedNames)
 	return names
+}
+
+// matchKeyword checks if keyword appears as a whole word in text.
+// Both text and keyword should be lowercase.
+func matchKeyword(text, keyword string) bool {
+	idx := 0
+	for {
+		pos := strings.Index(text[idx:], keyword)
+		if pos < 0 {
+			return false
+		}
+		pos += idx
+
+		// Check left boundary
+		if pos > 0 && isWordChar(text[pos-1]) {
+			idx = pos + 1
+			continue
+		}
+
+		// Check right boundary
+		end := pos + len(keyword)
+		if end < len(text) && isWordChar(text[end]) {
+			idx = pos + 1
+			continue
+		}
+
+		return true
+	}
+}
+
+func isWordChar(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
 }
 
 // parseSkillMD parses a SKILL.md file into metadata and body.
@@ -261,6 +312,8 @@ func parseSkillMD(content string) (SkillMeta, string, error) {
 			meta.Description = val
 		case "auto_match":
 			meta.AutoMatch = val == "true"
+		case "priority":
+			fmt.Sscanf(val, "%d", &meta.Priority)
 		case "keywords":
 			// Parse simple YAML list: [a, b, c]
 			val = strings.Trim(val, "[]")
