@@ -78,6 +78,7 @@ func main() {
 			tool.WriteFile(),
 			tool.ListFiles(),
 			tool.Grep(),
+			tool.Search(),
 			tool.HTTPRequest(),
 		))
 	}
