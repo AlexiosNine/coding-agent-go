@@ -20,11 +20,58 @@ type readFileInput struct {
 // ReadFile returns a tool that reads file contents.
 // Supports optional line range: start_line and end_line (1-indexed, inclusive).
 // Supports pagination via offset and limit for large files (default 500 lines per page).
+// Detects repeated reads of the same region and returns a short reminder instead.
 func ReadFile() cc.Tool {
+	// Track which regions have been read in this session
+	type readRegion struct {
+		path  string
+		start int
+		end   int
+	}
+	var readHistory []readRegion
+
 	return cc.NewFuncTool("read_file", "Read the contents of a file. Optionally specify start_line and end_line to read a specific range, or use offset/limit for pagination.", func(ctx context.Context, in readFileInput) (string, error) {
 		if in.Path == "" {
 			return "", fmt.Errorf("path is required")
 		}
+
+		// Determine effective range
+		effectiveStart := in.Offset
+		effectiveEnd := in.Offset + 500
+		if in.StartLine > 0 {
+			effectiveStart = in.StartLine - 1
+			effectiveEnd = effectiveStart + 50
+			if in.EndLine > 0 {
+				effectiveEnd = in.EndLine
+			}
+		}
+		if in.Limit > 0 {
+			effectiveEnd = effectiveStart + in.Limit
+		}
+
+		// Check if this region was already read (>70% overlap)
+		for _, prev := range readHistory {
+			if prev.path != in.Path {
+				continue
+			}
+			// Calculate overlap
+			overlapStart := prev.start
+			if effectiveStart > overlapStart {
+				overlapStart = effectiveStart
+			}
+			overlapEnd := prev.end
+			if effectiveEnd < overlapEnd {
+				overlapEnd = effectiveEnd
+			}
+			overlap := overlapEnd - overlapStart
+			regionSize := effectiveEnd - effectiveStart
+			if regionSize > 0 && overlap > 0 && float64(overlap)/float64(regionSize) > 0.7 {
+				return fmt.Sprintf("[Already read %s lines %d-%d. Use edit_file to make changes, or read a different section.]", in.Path, prev.start+1, prev.end), nil
+			}
+		}
+
+		// Record this read
+		readHistory = append(readHistory, readRegion{path: in.Path, start: effectiveStart, end: effectiveEnd})
 
 		// Check if pagination is requested (offset > 0)
 		if in.Offset > 0 {

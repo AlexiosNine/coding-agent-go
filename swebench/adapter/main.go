@@ -225,7 +225,7 @@ Use the available tools to read files, search code, and make edits. When you're 
 		cc.WithTurnDelay(turnDelay),
 		cc.WithTokenAwareCompressMemory(20000, 3),
 		cc.WithToolOutputMaxSize(8000),
-		cc.WithToolResultSummary(2000),
+		cc.WithToolResultSummary(800),
 		cc.WithSessionFactCache(20),
 		cc.WithExplorationBudget(15),
 		cc.WithTools(
