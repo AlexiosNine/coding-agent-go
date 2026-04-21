@@ -21,10 +21,58 @@ type readFileInput struct {
 // Supports optional line range: start_line and end_line (1-indexed, inclusive).
 // Supports pagination via offset and limit for large files (default 500 lines per page).
 func ReadFile() cc.Tool {
+	// Track which regions have been read to provide nudges (not blocking)
+	type readRegion struct {
+		path  string
+		start int
+		end   int
+	}
+	var readHistory []readRegion
+
 	return cc.NewFuncTool("read_file", "Read the contents of a file. Optionally specify start_line and end_line to read a specific range, or use offset/limit for pagination.", func(ctx context.Context, in readFileInput) (string, error) {
 		if in.Path == "" {
 			return "", fmt.Errorf("path is required")
 		}
+
+		// Determine effective range for nudge detection
+		effectiveStart := in.Offset
+		effectiveEnd := in.Offset + 500
+		if in.StartLine > 0 {
+			effectiveStart = in.StartLine - 1
+			effectiveEnd = effectiveStart + 50
+			if in.EndLine > 0 {
+				effectiveEnd = in.EndLine
+			}
+		}
+		if in.Limit > 0 {
+			effectiveEnd = effectiveStart + in.Limit
+		}
+
+		// Check for repeated reads (nudge only, never block)
+		var nudge string
+		for _, prev := range readHistory {
+			if prev.path != in.Path {
+				continue
+			}
+			// Calculate overlap
+			overlapStart := prev.start
+			if effectiveStart > overlapStart {
+				overlapStart = effectiveStart
+			}
+			overlapEnd := prev.end
+			if effectiveEnd < overlapEnd {
+				overlapEnd = effectiveEnd
+			}
+			overlap := overlapEnd - overlapStart
+			regionSize := effectiveEnd - effectiveStart
+			if regionSize > 0 && overlap > 0 && float64(overlap)/float64(regionSize) > 0.8 {
+				nudge = fmt.Sprintf("\n[Note: You've already read %s lines %d-%d. If you need to make changes, use edit_file.]", in.Path, prev.start+1, prev.end)
+				break
+			}
+		}
+
+		// Record this read
+		readHistory = append(readHistory, readRegion{path: in.Path, start: effectiveStart, end: effectiveEnd})
 
 		// Check if pagination is requested (offset > 0)
 		if in.Offset > 0 {
@@ -72,7 +120,7 @@ func ReadFile() cc.Tool {
 			// Convert to 0-indexed and return the range
 			// Note: offset/limit are ignored when start_line/end_line are specified
 			lines = lines[in.StartLine-1 : in.EndLine]
-			return strings.Join(lines, "\n"), nil
+			return strings.Join(lines, "\n") + nudge, nil
 		}
 
 		// Store in buffer for future pagination
@@ -104,9 +152,9 @@ func ReadFile() cc.Tool {
 
 		if hasMore {
 			nextOffset := end
-			return fmt.Sprintf("%s\n---\nTotal: %d lines. Next offset: %d", page, total, nextOffset), nil
+			return fmt.Sprintf("%s\n---\nTotal: %d lines. Next offset: %d", page, total, nextOffset) + nudge, nil
 		}
 
-		return page, nil
+		return page + nudge, nil
 	})
 }
