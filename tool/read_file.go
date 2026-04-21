@@ -49,7 +49,11 @@ func ReadFile() cc.Tool {
 			effectiveEnd = effectiveStart + in.Limit
 		}
 
-		// Check if this region was already read (>70% overlap)
+		// Check if this region was already read (>95% overlap).
+		// Threshold is intentionally high: models often re-read a region to
+		// obtain the exact old_string needed for edit_file. A lower threshold
+		// (e.g. 0.7) blocks these legitimate re-reads and forces the model
+		// into expensive workarounds (shell sed, python, etc.).
 		for _, prev := range readHistory {
 			if prev.path != in.Path {
 				continue
@@ -65,7 +69,7 @@ func ReadFile() cc.Tool {
 			}
 			overlap := overlapEnd - overlapStart
 			regionSize := effectiveEnd - effectiveStart
-			if regionSize > 0 && overlap > 0 && float64(overlap)/float64(regionSize) > 0.7 {
+			if regionSize > 0 && overlap > 0 && float64(overlap)/float64(regionSize) > 0.95 {
 				// Read the file to get new (non-overlapping) content
 				data, err := os.ReadFile(in.Path)
 				if err != nil {
