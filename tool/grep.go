@@ -3,6 +3,7 @@ package tool
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,10 +13,48 @@ import (
 	cc "github.com/alexioschen/cc-connect/goagent"
 )
 
+// flexBool supports unmarshaling from bool, string ("true"/"false"), or number (1/0)
+type flexBool struct {
+	Value bool
+}
+
+func (f *flexBool) UnmarshalJSON(data []byte) error {
+	// Try bool first
+	var b bool
+	if err := json.Unmarshal(data, &b); err == nil {
+		f.Value = b
+		return nil
+	}
+
+	// Try string
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		switch strings.ToLower(s) {
+		case "true", "1", "yes":
+			f.Value = true
+			return nil
+		case "false", "0", "no", "":
+			f.Value = false
+			return nil
+		default:
+			return fmt.Errorf("invalid bool string: %s", s)
+		}
+	}
+
+	// Try number
+	var n float64
+	if err := json.Unmarshal(data, &n); err == nil {
+		f.Value = n != 0
+		return nil
+	}
+
+	return fmt.Errorf("cannot unmarshal %s as bool", string(data))
+}
+
 type grepInput struct {
-	Pattern    string `json:"pattern" desc:"Search pattern (regex supported)"`
-	Path       string `json:"path" desc:"File or directory to search in"`
-	Recursive  *bool  `json:"recursive,omitempty" desc:"Search recursively in directories (default: true)"`
+	Pattern    string    `json:"pattern" desc:"Search pattern (regex supported)"`
+	Path       string    `json:"path" desc:"File or directory to search in"`
+	Recursive  *flexBool `json:"recursive,omitempty" desc:"Search recursively in directories (default: true)"`
 	MaxDepth   int    `json:"max_depth,omitempty" desc:"Maximum directory depth for recursive search (default 10, 0=unlimited)"`
 	MaxResults int    `json:"max_results" desc:"Maximum number of results to return (default 1000)"`
 	Offset     int    `json:"offset,omitempty" desc:"Optional: result offset for pagination (0-indexed)"`
@@ -68,7 +107,7 @@ func Grep() cc.Tool {
 			// Default recursive to true
 			recursive := true
 			if input.Recursive != nil {
-				recursive = *input.Recursive
+				recursive = input.Recursive.Value
 			}
 
 			maxDepth := input.MaxDepth

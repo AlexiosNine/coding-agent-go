@@ -173,15 +173,76 @@ func findSimilarContent(content, oldString string) string {
 		return "Hint: no partial match found. Use read_file to check the exact content."
 	}
 
-	ctxStart := bestLine - 2
+	// 扩大上下文范围到 ±5 行
+	ctxStart := bestLine - 5
 	if ctxStart < 0 {
 		ctxStart = 0
 	}
-	ctxEnd := bestLine + windowSize + 3
+	ctxEnd := bestLine + windowSize + 5
 	if ctxEnd > len(lines) {
 		ctxEnd = len(lines)
 	}
-	context := strings.Join(lines[ctxStart:ctxEnd], "\n")
-	return fmt.Sprintf("Hint: found partial match near line %d (%d/%d lines matched). Actual content:\n%s",
-		bestLine+1, bestScore, windowSize, context)
+
+	// 计算 diff (with bounds safety)
+	actualEnd := bestLine + windowSize
+	if actualEnd > len(lines) {
+		actualEnd = len(lines)
+	}
+	actualLines := lines[bestLine:actualEnd]
+	diff := computeLineDiff(oldLines, actualLines)
+
+	// 构造增强的错误信息
+	var hint strings.Builder
+	hint.WriteString(fmt.Sprintf("Hint: found partial match near line %d (%d/%d lines matched).\n\n", bestLine+1, bestScore, windowSize))
+
+	if diff != "" {
+		hint.WriteString("Differences:\n")
+		hint.WriteString(diff)
+		hint.WriteString("\n")
+	}
+
+	hint.WriteString(fmt.Sprintf("Actual content (lines %d-%d):\n", ctxStart+1, ctxEnd))
+	for i := ctxStart; i < ctxEnd; i++ {
+		marker := "  "
+		if i >= bestLine && i < bestLine+windowSize {
+			marker = "→ " // 标记匹配区域
+		}
+		hint.WriteString(fmt.Sprintf("%s%4d: %s\n", marker, i+1, lines[i]))
+	}
+
+	hint.WriteString("\nTip: Use read_file to get the exact content, then copy-paste as old_string.")
+
+	return hint.String()
+}
+
+// computeLineDiff compares expected and actual line slices, returns a diff string
+// highlighting mismatched lines. Uses trimmed comparison and caps output at 10 diffs.
+func computeLineDiff(expected, actual []string) string {
+	var diff strings.Builder
+	maxDiffs := 10
+	count := 0
+
+	limit := len(expected)
+	if len(actual) < limit {
+		limit = len(actual)
+	}
+
+	for i := 0; i < limit && count < maxDiffs; i++ {
+		if strings.TrimSpace(expected[i]) != strings.TrimSpace(actual[i]) {
+			diff.WriteString(fmt.Sprintf("  Line %d:\n", i+1))
+			diff.WriteString(fmt.Sprintf("    Expected: %s\n", expected[i]))
+			diff.WriteString(fmt.Sprintf("    Actual:   %s\n", actual[i]))
+			count++
+		}
+	}
+
+	if len(expected) != len(actual) {
+		diff.WriteString(fmt.Sprintf("  Line count mismatch: expected %d lines, actual %d lines\n", len(expected), len(actual)))
+	}
+
+	if count >= maxDiffs {
+		diff.WriteString("  ... (more differences truncated)\n")
+	}
+
+	return diff.String()
 }

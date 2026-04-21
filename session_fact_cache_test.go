@@ -15,17 +15,28 @@ sympy/printing/fcode.py:200:     def _print_sinc(self, expr):
 	c.Extract("grep", output)
 
 	facts := c.Facts()
-	if len(facts) != 2 {
-		t.Fatalf("expected 2 facts, got %d", len(facts))
+	// Now expects 4 facts: 2 file_structure + 2 reference
+	if len(facts) != 4 {
+		t.Fatalf("expected 4 facts (2 file_structure + 2 reference), got %d", len(facts))
 	}
-	if facts[0].Category != "reference" {
-		t.Errorf("expected category=reference, got %s", facts[0].Category)
+
+	// Order: file_structure(octave), reference(octave), file_structure(fcode), reference(fcode)
+	if facts[0].Category != "file_structure" {
+		t.Errorf("expected category=file_structure, got %s", facts[0].Category)
 	}
-	if !strings.Contains(facts[0].Content, "octave.py:395") {
-		t.Errorf("expected octave.py:395 in fact, got: %s", facts[0].Content)
+	if !strings.Contains(facts[0].Content, "octave.py") {
+		t.Errorf("expected octave.py in fact, got: %s", facts[0].Content)
 	}
-	if !strings.Contains(facts[1].Content, "fcode.py:200") {
-		t.Errorf("expected fcode.py:200 in fact, got: %s", facts[1].Content)
+
+	// Check reference facts
+	if facts[1].Category != "reference" {
+		t.Errorf("expected category=reference, got %s", facts[1].Category)
+	}
+	if !strings.Contains(facts[1].Content, "octave.py:395") {
+		t.Errorf("expected octave.py:395 in fact, got: %s", facts[1].Content)
+	}
+	if !strings.Contains(facts[3].Content, "fcode.py:200") {
+		t.Errorf("expected fcode.py:200 in fact, got: %s", facts[3].Content)
 	}
 }
 
@@ -74,8 +85,9 @@ func TestSessionFactCache_Dedup(t *testing.T) {
 	c.Extract("grep", "file.py:10: def foo")
 	c.Extract("grep", "file.py:10: def foo")
 
-	if len(c.Facts()) != 1 {
-		t.Errorf("expected dedup to 1 fact, got %d", len(c.Facts()))
+	// Now expects 2 facts: 1 file_structure + 1 reference (deduped)
+	if len(c.Facts()) != 2 {
+		t.Errorf("expected 2 facts (1 file_structure + 1 reference), got %d", len(c.Facts()))
 	}
 }
 

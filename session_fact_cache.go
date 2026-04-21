@@ -9,7 +9,7 @@ import (
 
 // Fact represents a single piece of knowledge extracted from tool output.
 type Fact struct {
-	Category string // "definition", "reference", "insertion_point"
+	Category string // "definition", "reference", "import", "file_structure", "insertion_point"
 	Content  string // one-line description
 }
 
@@ -37,6 +37,8 @@ var (
 	defRe = regexp.MustCompile(`(?m)^\s*(def |class |func )\w+`)
 	// defLineRe extracts def/class with name
 	defLineRe = regexp.MustCompile(`(?:def |class |func )(\w+)`)
+	// importRe matches import statements in Python/Go
+	importRe = regexp.MustCompile(`(?m)^\s*(?:import\s+|from\s+.+\s+import\s+)`)
 )
 
 // Extract parses tool output and adds relevant facts to the cache.
@@ -53,10 +55,22 @@ func (c *SessionFactCache) Extract(toolName, output string) {
 
 func (c *SessionFactCache) extractGrep(output string) {
 	lines := strings.Split(output, "\n")
+	seenFiles := make(map[string]bool)
+
 	for _, line := range lines {
 		m := grepMatchRe.FindStringSubmatch(line)
 		if m != nil {
 			file, lineNum, content := m[1], m[2], m[3]
+
+			// Record file path index
+			if !seenFiles[file] {
+				c.addFact(Fact{
+					Category: "file_structure",
+					Content:  file,
+				})
+				seenFiles[file] = true
+			}
+
 			content = strings.TrimSpace(content)
 			if len(content) > 80 {
 				content = content[:80] + "..."
@@ -72,6 +86,19 @@ func (c *SessionFactCache) extractGrep(output string) {
 func (c *SessionFactCache) extractReadFile(output string) {
 	lines := strings.Split(output, "\n")
 	for i, line := range lines {
+		// Extract import statements
+		if importRe.MatchString(line) {
+			importStmt := strings.TrimSpace(line)
+			if len(importStmt) > 80 {
+				importStmt = importStmt[:80] + "..."
+			}
+			c.addFact(Fact{
+				Category: "import",
+				Content:  importStmt,
+			})
+		}
+
+		// Extract definitions
 		if defRe.MatchString(line) {
 			m := defLineRe.FindStringSubmatch(line)
 			if m != nil {
@@ -105,6 +132,14 @@ func (c *SessionFactCache) extractEditFile(output string) {
 	}
 }
 
+// categoryLimits defines the maximum number of facts per category.
+var categoryLimits = map[string]int{
+	"import":         30,
+	"file_structure": 50,
+	"definition":     40,
+	"reference":      80,
+}
+
 func (c *SessionFactCache) addFact(f Fact) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -112,12 +147,38 @@ func (c *SessionFactCache) addFact(f Fact) {
 	if c.seen[f.Content] {
 		return
 	}
+
+	// Per-category eviction
+	limit := categoryLimits[f.Category]
+	if limit == 0 {
+		limit = c.maxFacts
+	}
+
+	count := 0
+	for _, fact := range c.facts {
+		if fact.Category == f.Category {
+			count++
+		}
+	}
+
+	if count >= limit {
+		// Evict oldest fact in this category
+		for i, fact := range c.facts {
+			if fact.Category == f.Category {
+				delete(c.seen, fact.Content)
+				c.facts = append(c.facts[:i], c.facts[i+1:]...)
+				break
+			}
+		}
+	}
+
+	// Global cap still applies
 	if len(c.facts) >= c.maxFacts {
-		// Evict oldest fact
 		oldest := c.facts[0]
 		delete(c.seen, oldest.Content)
 		c.facts = c.facts[1:]
 	}
+
 	c.facts = append(c.facts, f)
 	c.seen[f.Content] = true
 }
