@@ -67,6 +67,13 @@ func (s *ToolResultSummarizer) summarizeGrep(output string) string {
 // summarizeReadFile extracts file path, line range, and def/class signatures,
 // while preserving as much actual code content as possible.
 func (s *ToolResultSummarizer) summarizeReadFile(output string) string {
+	// Preserve nudge if present (e.g., "[Note: You've already read...]")
+	var nudge string
+	if idx := strings.Index(output, "\n[Note: "); idx >= 0 {
+		nudge = output[idx:]
+		output = output[:idx]
+	}
+
 	lines := strings.Split(output, "\n")
 
 	// Extract def/class signatures with line numbers
@@ -97,7 +104,7 @@ func (s *ToolResultSummarizer) summarizeReadFile(output string) string {
 	}
 
 	// Fill remaining budget with actual content (head + tail)
-	contentBudget := s.maxLen - header.Len()
+	contentBudget := s.maxLen - header.Len() - len(nudge)
 	if contentBudget < 100 {
 		contentBudget = 100
 	}
@@ -105,12 +112,12 @@ func (s *ToolResultSummarizer) summarizeReadFile(output string) string {
 	headerStr := header.String()
 	content := strings.Join(lines, "\n")
 	if len(content) <= contentBudget {
-		return headerStr + "Content:\n" + content
+		return headerStr + "Content:\n" + content + nudge
 	}
 
 	headSize := contentBudget * 6 / 10
 	tailSize := contentBudget - headSize
-	return headerStr + "Content:\n" + content[:headSize] + "\n...\n" + content[len(content)-tailSize:]
+	return headerStr + "Content:\n" + content[:headSize] + "\n...\n" + content[len(content)-tailSize:] + nudge
 }
 
 // summarizeShell keeps exit info + last N lines.

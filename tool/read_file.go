@@ -87,9 +87,9 @@ func ReadFile() cc.Tool {
 					hasMore := (in.Offset + in.Limit) < total
 					if hasMore {
 						nextOffset := in.Offset + in.Limit
-						return fmt.Sprintf("%s\n---\nTotal: %d lines. Next offset: %d", page, total, nextOffset), nil
+						return fmt.Sprintf("%s\n---\nTotal: %d lines. Next offset: %d", page, total, nextOffset) + nudge, nil
 					}
-					return page, nil
+					return page + nudge, nil
 				}
 			}
 		}
