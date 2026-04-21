@@ -20,96 +20,11 @@ type readFileInput struct {
 // ReadFile returns a tool that reads file contents.
 // Supports optional line range: start_line and end_line (1-indexed, inclusive).
 // Supports pagination via offset and limit for large files (default 500 lines per page).
-// Detects repeated reads of the same region and returns a short reminder instead.
 func ReadFile() cc.Tool {
-	// Track which regions have been read in this session
-	type readRegion struct {
-		path  string
-		start int
-		end   int
-	}
-	var readHistory []readRegion
-
 	return cc.NewFuncTool("read_file", "Read the contents of a file. Optionally specify start_line and end_line to read a specific range, or use offset/limit for pagination.", func(ctx context.Context, in readFileInput) (string, error) {
 		if in.Path == "" {
 			return "", fmt.Errorf("path is required")
 		}
-
-		// Determine effective range
-		effectiveStart := in.Offset
-		effectiveEnd := in.Offset + 500
-		if in.StartLine > 0 {
-			effectiveStart = in.StartLine - 1
-			effectiveEnd = effectiveStart + 50
-			if in.EndLine > 0 {
-				effectiveEnd = in.EndLine
-			}
-		}
-		if in.Limit > 0 {
-			effectiveEnd = effectiveStart + in.Limit
-		}
-
-		// Check if this region was already read (>95% overlap).
-		// Threshold is intentionally high: models often re-read a region to
-		// obtain the exact old_string needed for edit_file. A lower threshold
-		// (e.g. 0.7) blocks these legitimate re-reads and forces the model
-		// into expensive workarounds (shell sed, python, etc.).
-		for _, prev := range readHistory {
-			if prev.path != in.Path {
-				continue
-			}
-			// Calculate overlap
-			overlapStart := prev.start
-			if effectiveStart > overlapStart {
-				overlapStart = effectiveStart
-			}
-			overlapEnd := prev.end
-			if effectiveEnd < overlapEnd {
-				overlapEnd = effectiveEnd
-			}
-			overlap := overlapEnd - overlapStart
-			regionSize := effectiveEnd - effectiveStart
-			if regionSize > 0 && overlap > 0 && float64(overlap)/float64(regionSize) > 0.95 {
-				// Read the file to get new (non-overlapping) content
-				data, err := os.ReadFile(in.Path)
-				if err != nil {
-					return "", fmt.Errorf("read file %s: %w", in.Path, err)
-				}
-				fileLines := strings.Split(string(data), "\n")
-
-				var newContent strings.Builder
-				fmt.Fprintf(&newContent, "[Already read %s lines %d-%d]", in.Path, prev.start+1, prev.end)
-
-				// Output only the new lines not covered by previous read
-				if effectiveStart < prev.start && effectiveStart < len(fileLines) {
-					end := prev.start
-					if end > len(fileLines) {
-						end = len(fileLines)
-					}
-					fmt.Fprintf(&newContent, "\nNew lines %d-%d:\n%s", effectiveStart+1, end, strings.Join(fileLines[effectiveStart:end], "\n"))
-				}
-				if effectiveEnd > prev.end && prev.end < len(fileLines) {
-					start := prev.end
-					end := effectiveEnd
-					if end > len(fileLines) {
-						end = len(fileLines)
-					}
-					fmt.Fprintf(&newContent, "\nNew lines %d-%d:\n%s", start+1, end, strings.Join(fileLines[start:end], "\n"))
-				}
-
-				// If no new content at all, just return the reminder
-				if !strings.Contains(newContent.String(), "New lines") {
-					newContent.WriteString("\nUse edit_file to make changes, or read a different section.")
-				}
-
-				// Update history to cover the full range
-				readHistory = append(readHistory, readRegion{path: in.Path, start: effectiveStart, end: effectiveEnd})
-				return newContent.String(), nil
-			}
-		}
-
-		// Record this read
-		readHistory = append(readHistory, readRegion{path: in.Path, start: effectiveStart, end: effectiveEnd})
 
 		// Check if pagination is requested (offset > 0)
 		if in.Offset > 0 {
