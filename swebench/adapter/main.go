@@ -107,71 +107,40 @@ func runAgent(instance Instance) (string, error) {
 	exec.Command("git", "-C", workDir, "checkout", ".").Run()
 
 	// Construct prompt
-	prompt := fmt.Sprintf(`You are a software engineer tasked with fixing a GitHub issue.
+	prompt := fmt.Sprintf(`You are a software engineer fixing a GitHub issue.
 
-Repository: %s
-Base Commit: %s
+Repository: %s | Base Commit: %s | Checkout: %s
 
-Issue Description:
+Issue:
 %s
 
 %s
 
-Your task:
-1. Analyze the issue and understand what needs to be fixed
-2. Locate the relevant files in the repository
-3. Make the necessary code changes to fix the issue
-4. Ensure your changes are minimal and focused
+WORKFLOW (explore → edit → done):
+1. grep to find relevant files/line numbers
+2. read_file with line ranges (start_line, end_line) to examine code
+3. edit_file to make targeted changes (provide exact old_string and new_string)
+4. Respond with text explaining your fix (signals completion)
 
-The repository is checked out at: %s
+CONSTRAINTS:
+- Do NOT run tests or execute code - environment not configured
+- Focus ONLY on the specific issue - no extra features
+- Read each file max 2 times - after 3-5 files, start editing
+- edit_file returns success - do NOT re-read to verify
+- Use parallel tool calls when possible
+- Respond with text (no tools) when done
 
-IMPORTANT:
-- Do NOT try to run tests or execute Python code - the environment is not set up for that
-- Focus ONLY on fixing the specific issue described - do not add extra features or improvements
-- Use grep to search, read_file to examine code (supports line ranges: start_line, end_line)
-- Use edit_file to make targeted changes (preferred over write_file for existing files)
-- edit_file replaces a specific string in a file - provide exact old_string and new_string
-- When you've made the fix, respond with text explaining what you did - this signals completion
-- Be efficient: use parallel tool calls when possible, read only necessary lines
+TOOLS:
+- grep: search codebase
+- read_file: examine code (supports line ranges)
+- edit_file: replace exact old_string with new_string (preferred over write_file)
 
-Workflow suggestion:
-1. grep to find relevant files and line numbers
-2. read_file with line ranges to examine specific sections
-3. edit_file to make the fix
-4. Explain what you did (this ends the task)
-
-CRITICAL RULES:
-- Do NOT read the same file more than twice. Once you understand the code, make the change.
-- After reading 3-5 files, you MUST start editing. Do not keep exploring.
-- Use edit_file with exact old_string and new_string to make targeted changes.
-- edit_file returns success confirmation - do NOT re-read the file to verify changes.
-- If edit_file fails with "old_string not found", check the hint in the error message.
-- Respond with text (no tool calls) when you are done - this signals completion.
-
-EXAMPLE of an efficient fix (completed in 10 turns):
-
-Issue: "ccode(sinc(x)) doesn't work - should output Piecewise C code"
-
-Turn 1: [parallel] grep "def _print_sinc" + read_file ccode.py:1-100
-  → Found: octave.py:395 has _print_sinc, ccode.py has no _print_sinc
-Turn 2: [parallel] read_file octave.py:395-400 + read_file ccode.py:100-300
-  → Saw octave's implementation and ccode's existing _print_ methods
-Turn 3: grep "class sinc" in functions/
-  → Found: trigonometric.py:1620
-Turn 4: read_file trigonometric.py:1620-1670
-  → Understood sinc class definition
-Turn 5-6: read_file ccode.py to find exact insertion point
-Turn 7: edit_file ccode.py → added _print_sinc method (SUCCESS)
-Turn 8: text response explaining the fix (DONE)
-
-Key pattern: explore (5 turns) → edit (1-2 turns) → done (1 turn)
-
-Use the available tools to read files, search code, and make edits. When you're done, I will generate a patch from your changes.`,
+PATTERN: explore (5 turns) → edit (1-2 turns) → done (1 turn)`,
 		instance.Repo,
 		instance.BaseCommit,
+		workDir,
 		instance.ProblemStatement,
 		formatHints(instance.HintsText),
-		workDir,
 	)
 
 	// Create agent with tools
