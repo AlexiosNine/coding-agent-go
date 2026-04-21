@@ -43,15 +43,23 @@ func truncateSuffix(remaining int) string {
 }
 
 // truncateReadFile keeps first 60% + last 40% of the output.
+// Preserves nudge hints (e.g., "[Note: You've already read...]") if present.
 func truncateReadFile(output string, max int) string {
+	// Extract and preserve nudge
+	var nudge string
+	if idx := strings.Index(output, "\n[Note: "); idx >= 0 {
+		nudge = output[idx:]
+		output = output[:idx]
+	}
+
 	suffix := truncateSuffix(len(output) - max)
-	usable := max - len(suffix)
+	usable := max - len(suffix) - len(nudge)
 	if usable <= 0 {
 		return output[:max]
 	}
 	headSize := usable * 6 / 10
 	tailSize := usable - headSize
-	return output[:headSize] + "\n...\n" + output[len(output)-tailSize:] + suffix
+	return output[:headSize] + "\n...\n" + output[len(output)-tailSize:] + suffix + nudge
 }
 
 // truncateShell keeps the tail (errors are usually at the end).
