@@ -261,3 +261,9 @@ func WithSkill(skill *Skill) Option {
 func WithTurnDelay(d time.Duration) Option {
 	return func(a *Agent) { a.turnDelay = d }
 }
+
+// WithToolTimeout sets a timeout for individual tool execution.
+// Default is 0 (no timeout). Recommended: 120s for most tools, 300s for shell.
+func WithToolTimeout(d time.Duration) Option {
+	return func(a *Agent) { a.toolTimeout = d }
+}

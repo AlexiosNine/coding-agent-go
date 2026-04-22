@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -25,6 +26,7 @@ type Session struct {
 	skillRegistry     *SkillRegistry
 	skillTool         Tool     // use_skill tool instance
 	activeSkills      []string // session-local active skill names
+	activeSkillsMu    sync.RWMutex // protects activeSkills
 	maxActiveSkills   int      // max concurrent active skills (default 3)
 	systemOverride    string   // if set, overrides agent.system for this session
 }
@@ -45,6 +47,8 @@ func (s *Session) Run(ctx context.Context, input string) (*RunResult, error) {
 
 	var totalUsage Usage
 	consecutiveExplorationTurns := 0
+	continuationCount := 0 // Track consecutive continuations to prevent infinite loops
+	const maxContinuations = 3
 
 	for turn := range s.agent.maxTurns {
 		// Rate limiting: sleep between turns to avoid API throttling
@@ -65,11 +69,27 @@ func (s *Session) Run(ctx context.Context, input string) (*RunResult, error) {
 
 		s.memory.Add(Message{Role: RoleAssistant, Content: resp.Content})
 
+		// Continuation check: if response was truncated due to max_tokens, inject [continue]
+		if resp.StopReason == "max_tokens" {
+			continuationCount++
+			if continuationCount > maxContinuations {
+				return &RunResult{
+					Output:   fmt.Sprintf("Max continuations (%d) exceeded - response may be incomplete", maxContinuations),
+					Messages: s.memory.Messages(),
+					Turns:    turn + 1,
+					Usage:    totalUsage,
+				}, fmt.Errorf("exceeded max continuations (%d)", maxContinuations)
+			}
+			s.memory.Add(NewUserMessage("[continue]"))
+			continue // Don't count this as a turn
+		}
+		continuationCount = 0 // Reset counter on normal response
+
 		toolUses := resp.ToolUses()
 		if len(toolUses) == 0 {
 			// Implicit skill matching on text responses
 			if s.skillRegistry != nil {
-				if skill := s.skillRegistry.Match(resp.Text(), s.activeSkills); skill != nil {
+				if skill := s.skillRegistry.Match(resp.Text(), s.getActiveSkills()); skill != nil {
 					s.activateSkill(skill.Meta.Name)
 					s.memory.Add(NewUserMessage(fmt.Sprintf("[System: Skill %q auto-activated. Follow its instructions.]", skill.Meta.Name)))
 					continue // next turn will see skill instructions in system prompt
@@ -185,7 +205,7 @@ func (s *Session) step(ctx context.Context) (*ChatResponse, error) {
 		if summary := s.skillRegistry.Summary(); summary != "" {
 			system += "\n" + summary
 		}
-		if inst := s.skillRegistry.GetInstructions(s.activeSkills); inst != "" {
+		if inst := s.skillRegistry.GetInstructions(s.getActiveSkills()); inst != "" {
 			system += "\n" + inst
 		}
 	}
@@ -281,6 +301,13 @@ func (s *Session) executeSingleTool(ctx context.Context, tu ToolUseContent) Tool
 		}
 	}
 
+	// Apply tool-level timeout if configured
+	if s.agent.toolTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, s.agent.toolTimeout)
+		defer cancel()
+	}
+
 	// Propagate OS sandbox via context
 	if s.agent.osSandbox != nil {
 		ctx = WithOSSandbox(ctx, s.agent.osSandbox)
@@ -289,6 +316,15 @@ func (s *Session) executeSingleTool(ctx context.Context, tu ToolUseContent) Tool
 	ctx = WithOutputBuffer(ctx, s.outputBuffer)
 
 	output, err := tool.Execute(ctx, tu.Input)
+
+	// Check for timeout before other error handling
+	if err != nil && ctx.Err() == context.DeadlineExceeded {
+		return ToolResultContent{
+			ToolUseID: tu.ID,
+			Content:   fmt.Sprintf("tool %q timed out after %v", tu.Name, s.agent.toolTimeout),
+			IsError:   true,
+		}
+	}
 
 	// Apply output compression if configured
 	if s.agent.toolOutputCompressor != nil && err == nil {
@@ -328,6 +364,9 @@ func (s *Session) ClearMemory() {
 // activateSkill adds a skill to the session's active list.
 // Implements LRU eviction if maxActiveSkills is exceeded.
 func (s *Session) activateSkill(name string) {
+	s.activeSkillsMu.Lock()
+	defer s.activeSkillsMu.Unlock()
+
 	// Check if already active
 	for _, n := range s.activeSkills {
 		if n == name {
@@ -345,12 +384,25 @@ func (s *Session) activateSkill(name string) {
 
 // deactivateSkill removes a skill from the session's active list.
 func (s *Session) deactivateSkill(name string) {
+	s.activeSkillsMu.Lock()
+	defer s.activeSkillsMu.Unlock()
+
 	for i, n := range s.activeSkills {
 		if n == name {
 			s.activeSkills = append(s.activeSkills[:i], s.activeSkills[i+1:]...)
 			return
 		}
 	}
+}
+
+// getActiveSkills returns a snapshot of the active skills list.
+func (s *Session) getActiveSkills() []string {
+	s.activeSkillsMu.RLock()
+	defer s.activeSkillsMu.RUnlock()
+
+	cp := make([]string, len(s.activeSkills))
+	copy(cp, s.activeSkills)
+	return cp
 }
 
 // RunStream executes the agent loop with streaming output.
@@ -416,7 +468,7 @@ func (s *Session) streamStep(ctx context.Context, out chan<- StreamEvent) (*Chat
 		if summary := s.skillRegistry.Summary(); summary != "" {
 			system += "\n" + summary
 		}
-		if inst := s.skillRegistry.GetInstructions(s.activeSkills); inst != "" {
+		if inst := s.skillRegistry.GetInstructions(s.getActiveSkills()); inst != "" {
 			system += "\n" + inst
 		}
 	}

@@ -35,6 +35,7 @@ type Agent struct {
 	sessionFactCacheSize int // 0 = disabled
 	skillRegistry        *SkillRegistry
 	turnDelay            time.Duration // delay between turns for rate limiting (0 = disabled)
+	toolTimeout          time.Duration // timeout for individual tool execution (0 = no timeout)
 	closers             []io.Closer // MCP clients and other resources to clean up
 }
 
