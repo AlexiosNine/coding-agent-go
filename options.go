@@ -86,6 +86,12 @@ func WithRetry(cfg RetryConfig) Option {
 	return func(a *Agent) { a.retry = &cfg }
 }
 
+// WithToolRetry sets the retry configuration for tool execution.
+// Only transient errors (timeout, connection refused, rate limit) are retried.
+func WithToolRetry(cfg RetryConfig) Option {
+	return func(a *Agent) { a.toolRetry = &cfg }
+}
+
 // WithMaxRetries enables retry with the given max attempts and default delays.
 func WithMaxRetries(n int) Option {
 	return func(a *Agent) {
@@ -266,4 +272,19 @@ func WithTurnDelay(d time.Duration) Option {
 // Default is 0 (no timeout). Recommended: 120s for most tools, 300s for shell.
 func WithToolTimeout(d time.Duration) Option {
 	return func(a *Agent) { a.toolTimeout = d }
+}
+
+// WithLLMCompaction enables LLM-based context compaction.
+// When memory is CompressMemory-based, the middle 80% of messages are summarized
+// by an LLM instead of being rule-truncated. This preserves key semantic information.
+//
+// Parameters:
+//   - model: the model name for summarization (e.g., "claude-3-5-haiku-20241022")
+//
+// The agent's provider is reused for the LLM call.
+// If the agent's memory is not CompressMemory-based, this option is a no-op.
+func WithLLMCompaction(model string) Option {
+	return func(a *Agent) {
+		a.llmCompactionModel = model
+	}
 }

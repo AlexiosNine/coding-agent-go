@@ -3,6 +3,7 @@ package cc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -315,7 +316,7 @@ func (s *Session) executeSingleTool(ctx context.Context, tu ToolUseContent) Tool
 
 	ctx = WithOutputBuffer(ctx, s.outputBuffer)
 
-	output, err := tool.Execute(ctx, tu.Input)
+	output, err := s.executeToolWithRetry(ctx, tool, tu.Input)
 
 	// Check for timeout before other error handling
 	if err != nil && ctx.Err() == context.DeadlineExceeded {
@@ -349,6 +350,33 @@ func (s *Session) executeSingleTool(ctx context.Context, tu ToolUseContent) Tool
 		return ToolResultContent{ToolUseID: tu.ID, Content: fmt.Sprintf("error: %s", err.Error()), IsError: true}
 	}
 	return ToolResultContent{ToolUseID: tu.ID, Content: output}
+}
+
+// executeToolWithRetry runs tool.Execute, optionally retrying on transient errors.
+func (s *Session) executeToolWithRetry(ctx context.Context, tool Tool, input json.RawMessage) (string, error) {
+	if s.agent.toolRetry == nil {
+		return tool.Execute(ctx, input)
+	}
+
+	var output string
+	err := retry(ctx, *s.agent.toolRetry, func() error {
+		var execErr error
+		output, execErr = tool.Execute(ctx, input)
+		if execErr == nil {
+			return nil
+		}
+		if isTransientToolError(execErr) {
+			return &TransientToolError{Err: execErr}
+		}
+		// Non-transient: wrap in a non-retryable error to stop retry loop
+		return execErr
+	})
+	// Unwrap TransientToolError so callers see the original error
+	var te *TransientToolError
+	if errors.As(err, &te) {
+		return output, te.Err
+	}
+	return output, err
 }
 
 // Messages returns the session's conversation history.

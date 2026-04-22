@@ -25,6 +25,7 @@ type Agent struct {
 	maxExplorationTurns int // abort if this many consecutive turns have no edit/write (0 = disabled)
 	explorationBudget   int // exploration budget tokens (0 = disabled, use ReadTracker instead)
 	retry               *RetryConfig
+	toolRetry           *RetryConfig // retry config for tool execution (nil = no retry)
 	hooks               Hooks
 	memoryFactory       func() Memory
 	approver            Approver   // tool approval strategy
@@ -36,6 +37,7 @@ type Agent struct {
 	skillRegistry        *SkillRegistry
 	turnDelay            time.Duration // delay between turns for rate limiting (0 = disabled)
 	toolTimeout          time.Duration // timeout for individual tool execution (0 = no timeout)
+	llmCompactionModel   string        // model for LLM-based context compaction (empty = disabled)
 	closers             []io.Closer // MCP clients and other resources to clean up
 }
 
@@ -69,6 +71,12 @@ func (a *Agent) NewSession() *Session {
 		outputBuffer: NewOutputBuffer(50 << 20),
 		dedup:        NewMessageDeduplicator(),
 		summarizer:   a.toolResultSummarizer,
+	}
+	// Inject LLM compactor if configured and memory supports it
+	if a.llmCompactionModel != "" && a.provider != nil {
+		if cm, ok := s.memory.(*CompressMemory); ok {
+			cm.SetCompactor(NewLLMCompactor(a.provider, a.llmCompactionModel))
+		}
 	}
 	if a.explorationBudget > 0 {
 		s.explorationBudget = NewExplorationBudget(a.explorationBudget)

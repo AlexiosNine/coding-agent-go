@@ -3,6 +3,7 @@ package cc
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -62,13 +63,43 @@ func (e *ProviderError) Unwrap() error {
 	return e.Err
 }
 
-// IsRetryable returns true if the error is a retryable ProviderError.
+// IsRetryable returns true if the error is retryable.
+// It recognizes ProviderError (for LLM calls) and TransientToolError (for tool execution).
 func IsRetryable(err error) bool {
 	var pe *ProviderError
 	if errors.As(err, &pe) {
 		return pe.Retryable
 	}
+	var te *TransientToolError
+	if errors.As(err, &te) {
+		return true
+	}
 	return false
+}
+
+// TransientToolError marks a tool execution error as transient (retryable).
+type TransientToolError struct {
+	Err error
+}
+
+func (e *TransientToolError) Error() string { return e.Err.Error() }
+func (e *TransientToolError) Unwrap() error { return e.Err }
+
+// isTransientToolError checks whether a tool execution error is transient
+// (network timeout, connection refused, rate limit, etc.).
+func isTransientToolError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "rate limit") ||
+		strings.Contains(msg, "temporary") ||
+		strings.Contains(msg, "unavailable") ||
+		strings.Contains(msg, "429") ||
+		strings.Contains(msg, "503")
 }
 
 // IsRateLimited returns true if the error is a rate limit ProviderError.

@@ -1,8 +1,10 @@
 package cc
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"time"
 )
 
 const (
@@ -29,6 +31,7 @@ type CompressMemory struct {
 	maxMessages       int     // trigger compression by message count
 	contextWindowSize int     // model's context window in tokens (0 = disabled)
 	compressThreshold float64 // fraction of context window that triggers compression (e.g. 0.70)
+	compactor         Compactor // nil = use rule-based (default)
 }
 
 // NewCompressMemory creates a memory that auto-compresses when messages exceed maxMessages.
@@ -71,6 +74,13 @@ func (c *CompressMemory) SetCompressThreshold(threshold float64) {
 	if threshold > 0 && threshold < 1 {
 		c.compressThreshold = threshold
 	}
+}
+
+// SetCompactor sets the compression strategy.
+// When nil (default), rule-based compression is used.
+// Pass an LLMCompactor to enable LLM-based semantic summarization.
+func (c *CompressMemory) SetCompactor(compactor Compactor) {
+	c.compactor = compactor
 }
 
 func (c *CompressMemory) Add(msg Message) {
@@ -163,8 +173,8 @@ func (c *CompressMemory) compress() {
 	middle := c.messages[middleStart:middleEnd]
 	recent := c.messages[middleEnd:]
 
-	// Compress middle: simplify tool results, summarize conversation
-	compressed := compressMiddleMessages(middle)
+	// Compress middle using compactor (LLM or rule-based)
+	compressed := c.compactMiddle(middle)
 
 	// Rebuild: [first 10%] [compressed middle] [last 10%]
 	result := make([]Message, 0, len(first)+1+len(recent))
@@ -173,6 +183,27 @@ func (c *CompressMemory) compress() {
 	result = append(result, recent...)
 
 	c.messages = result
+}
+
+// compactMiddle compresses the middle portion of messages using the configured compactor.
+// Falls back to rule-based compression if no compactor is set or if LLM compaction fails.
+func (c *CompressMemory) compactMiddle(middle []Message) string {
+	if c.compactor == nil {
+		return compressMiddleMessages(middle)
+	}
+
+	// Use a background context with timeout for compaction
+	// to avoid blocking the main conversation loop indefinitely
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	result, err := c.compactor.Compact(ctx, middle)
+	if err != nil {
+		// Fallback to rule-based on error
+		return compressMiddleMessages(middle)
+	}
+
+	return "[LLM-compressed conversation history]\n" + result
 }
 
 // compressMiddleMessages simplifies tool results and summarizes conversation.
