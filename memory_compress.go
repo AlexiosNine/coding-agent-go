@@ -157,9 +157,9 @@ func (c *CompressMemory) compress() {
 		return // need at least 3 messages to compress
 	}
 
-	// Dynamic split: keep first 10% and last 10%, compress middle 80%
+	// Dynamic split: keep first 10% and last recentWindow (or 10%), compress middle
 	keepFirst := max(1, n/10)
-	keepLast := max(1, n/10)
+	keepLast := max(c.recentWindow, n/10)
 
 	// Ensure we have something to compress
 	if keepFirst+keepLast >= n {

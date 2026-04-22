@@ -129,22 +129,6 @@ func (s *Session) Run(ctx context.Context, input string) (*RunResult, error) {
 			}
 		}
 
-		if hasMutatingTool {
-			consecutiveExplorationTurns = 0
-		} else {
-			consecutiveExplorationTurns++
-		}
-
-		// If stuck in exploration mode for too long, abort
-		if s.agent.maxExplorationTurns > 0 && consecutiveExplorationTurns >= s.agent.maxExplorationTurns {
-			return &RunResult{
-				Output:   fmt.Sprintf("Aborted: %d consecutive turns without making code changes (stuck in exploration mode)", consecutiveExplorationTurns),
-				Messages: s.memory.Messages(),
-				Turns:    turn + 1,
-				Usage:    totalUsage,
-			}, fmt.Errorf("stuck in exploration: %d turns without edit_file/write_file", consecutiveExplorationTurns)
-		}
-
 		results := s.executeTools(ctx, toolUses)
 		s.memory.Add(NewToolResultMessage(results...))
 
@@ -152,6 +136,11 @@ func (s *Session) Run(ctx context.Context, input string) (*RunResult, error) {
 		if s.explorationBudget != nil {
 			if nudge := s.explorationBudget.Consume(toolUses); nudge != "" {
 				s.memory.Add(NewUserMessage(nudge))
+				// Also inject into system override so nudge survives compression
+				s.systemOverride = s.agent.system + "\n\n" + nudge
+			} else if hasMutatingTool {
+				// Reset system override when agent starts editing
+				s.systemOverride = ""
 			}
 		} else {
 			// Legacy path: simple counter + ReadTracker
