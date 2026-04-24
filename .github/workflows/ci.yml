@@ -1,0 +1,171 @@
+# CI pipeline for goagent — the Go agent runtime.
+#
+# Triggers on pushes/PRs that touch goagent/** and on manual dispatch.
+# Four parallel jobs: lint, test (with coverage), build, security.
+# gojieba requires CGO (gcc/g++); ubuntu runners ship these by default.
+
+name: Go CI (goagent)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel stale runs on the same branch
+concurrency:
+  group: go-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.25.x"
+
+jobs:
+  # ── Lint ────────────────────────────────────────────────
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.sum
+
+      # go vet: built-in, always available
+      - name: go vet
+        run: go vet ./...
+
+      # golangci-lint: best-effort — skip gracefully if action unavailable
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        continue-on-error: true
+        with:
+          version: latest
+          args: --timeout=3m
+
+  # ── Test ────────────────────────────────────────────────
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest]
+        # Uncomment to add macOS:
+        # os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.sum
+
+      # Run all tests with race detector and coverage
+      - name: Run tests
+        run: |
+          go test -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      # Print coverage summary to the job log
+      - name: Coverage report
+        run: |
+          go tool cover -func=coverage.out
+          echo ""
+          # Extract total coverage percentage
+          TOTAL=$(go tool cover -func=coverage.out | grep ^total: | awk '{print $NF}')
+          echo "### Total coverage: ${TOTAL}" >> "$GITHUB_STEP_SUMMARY"
+
+      # Upload coverage as artifact (no external services)
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        if: matrix.os == 'ubuntu-latest'
+        with:
+          name: coverage-report
+          path: coverage.out
+          retention-days: 14
+
+  # ── Build ───────────────────────────────────────────────
+  build:
+    name: Build (linux/amd64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.sum
+
+      # Cross-compile the CLI binary
+      - name: Build agent binary
+        env:
+          CGO_ENABLED: "1"
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          go build -trimpath -ldflags="-s -w" -o agent ./cmd/agent
+
+      - name: Verify binary
+        run: file agent
+
+      # Optional: upload binary as artifact
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-linux-amd64
+          path: agent
+          retention-days: 7
+
+  # ── Security ────────────────────────────────────────────
+  security:
+    name: Security
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.sum
+
+      # Verify module checksums haven't been tampered with
+      - name: Verify modules
+        run: go mod verify
+
+      # govulncheck: official Go vulnerability scanner
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Run govulncheck
+        run: govulncheck ./...
+
+  # ── Quality Gate ────────────────────────────────────────
+  quality-gate:
+    name: Quality Gate
+    runs-on: ubuntu-latest
+    needs: [lint, test, build, security]
+    if: always()
+    steps:
+      - name: Evaluate results
+        run: |
+          echo "lint:     ${{ needs.lint.result }}"
+          echo "test:     ${{ needs.test.result }}"
+          echo "build:    ${{ needs.build.result }}"
+          echo "security: ${{ needs.security.result }}"
+
+          # lint is advisory (golangci-lint may not be configured yet)
+          # test, build, security are mandatory
+          if [ "${{ needs.test.result }}" != "success" ] || \
+             [ "${{ needs.build.result }}" != "success" ] || \
+             [ "${{ needs.security.result }}" != "success" ]; then
+            echo "Quality gate FAILED"
+            exit 1
+          fi
+          echo "Quality gate passed"
