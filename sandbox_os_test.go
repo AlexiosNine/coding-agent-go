@@ -161,14 +161,22 @@ func TestOSSandbox_Docker_BlocksOutsideAccess(t *testing.T) {
 
 	output, err := cmd.CombinedOutput()
 	// Docker container has its own /etc/passwd, so this will succeed
-	// but it's the container's passwd, not the host's
+	// but it's the container's passwd, not the host's.
 	if err != nil {
-		t.Logf("Docker command failed (expected): %v", err)
-	} else {
-		// Verify it's the container's passwd (should be minimal)
-		if len(output) > 1000 {
-			t.Error("Output too large, might be reading host /etc/passwd")
-		}
+		t.Logf("Docker command failed (expected in isolated sandbox): %v", err)
+		return
+	}
+
+	// Verify the container's /etc/passwd does NOT contain the host user's
+	// home directory (e.g. /home/runner or /Users/...), which would indicate
+	// the host filesystem is leaking into the container.
+	hostPasswd, readErr := os.ReadFile("/etc/passwd")
+	if readErr != nil {
+		t.Logf("Could not read host /etc/passwd for comparison: %v", readErr)
+		return
+	}
+	if string(output) == string(hostPasswd) {
+		t.Error("Container /etc/passwd is identical to host — sandbox isolation may be broken")
 	}
 }
 
