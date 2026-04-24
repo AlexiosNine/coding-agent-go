@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -103,14 +104,7 @@ func TestOSSandbox_WrapCommand_Docker(t *testing.T) {
 	}
 
 	// Verify --network=none flag
-	hasNetworkNone := false
-	for _, arg := range cmd.Args {
-		if arg == "--network=none" {
-			hasNetworkNone = true
-			break
-		}
-	}
-	if !hasNetworkNone {
+	if !slices.Contains(cmd.Args, "--network=none") {
 		t.Error("Docker command missing --network=none flag")
 	}
 }
