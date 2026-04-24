@@ -12,8 +12,8 @@ func TestExplorationBudget_DeductsOnReadOnly(t *testing.T) {
 		{Name: "read_file", Input: mustMarshal(map[string]any{"path": "test.go"})},
 	}
 
-	nudge := b.Consume(toolUses, []ToolResultContent{})
-	if nudge != "" {
+	b.Consume(toolUses, []ToolResultContent{})
+	if b.ActiveNudge() != "" {
 		t.Errorf("unexpected nudge on first read")
 	}
 	if b.Remaining() != 9 {
@@ -99,9 +99,10 @@ func TestExplorationBudget_ExhaustionNudge(t *testing.T) {
 	b := NewExplorationBudget(3)
 
 	for i := range 3 {
-		nudge := b.Consume([]ToolUseContent{
+		b.Consume([]ToolUseContent{
 			{Name: "read_file", Input: mustMarshal(map[string]any{"path": "test.go"})},
 		}, []ToolResultContent{})
+		nudge := b.ActiveNudge()
 		if i < 2 && nudge != "" {
 			t.Errorf("unexpected nudge at iteration %d", i)
 		}

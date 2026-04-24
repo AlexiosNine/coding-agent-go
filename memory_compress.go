@@ -15,6 +15,10 @@ const (
 	estimatedCharsPerToken   = 4      // rough estimate: 1 token ≈ 4 chars
 )
 
+// KeepCondition is a predicate that determines whether a message should be preserved
+// during compression. Multiple conditions can be registered; any match preserves the message.
+type KeepCondition func(Message) bool
+
 // CompressMemory automatically compresses conversation history when it exceeds
 // a threshold. Supports two trigger modes:
 //
@@ -25,6 +29,11 @@ const (
 //   - Tier 1: Drop old tool results (keep only last turn's results)
 //   - Tier 2: Summarize old conversation turns into a single message
 //   - Tier 3: Keep only system prompt + recent window
+//
+// During compression, middle messages are split into three categories:
+//   - keep: matches keepConditions → pinned after summary
+//   - drop: matches dropConditions (but not keep) → silently discarded
+//   - compress: everything else → included in summary
 type CompressMemory struct {
 	messages          []Message
 	recentWindow      int     // number of recent messages to always keep
@@ -32,6 +41,8 @@ type CompressMemory struct {
 	contextWindowSize int     // model's context window in tokens (0 = disabled)
 	compressThreshold float64 // fraction of context window that triggers compression (e.g. 0.70)
 	compactor         Compactor // nil = use rule-based (default)
+	keepConditions    []KeepCondition // messages matching any condition are preserved during compression
+	dropConditions    []KeepCondition // messages matching any condition are silently discarded (not summarized)
 }
 
 // NewCompressMemory creates a memory that auto-compresses when messages exceed maxMessages.
@@ -81,6 +92,19 @@ func (c *CompressMemory) SetCompressThreshold(threshold float64) {
 // Pass an LLMCompactor to enable LLM-based semantic summarization.
 func (c *CompressMemory) SetCompactor(compactor Compactor) {
 	c.compactor = compactor
+}
+
+// AddKeepCondition registers a predicate that prevents matching messages from being
+// compressed away. Any message satisfying at least one condition is preserved.
+func (c *CompressMemory) AddKeepCondition(cond KeepCondition) {
+	c.keepConditions = append(c.keepConditions, cond)
+}
+
+// AddDropCondition registers a predicate that causes matching messages to be silently
+// discarded during compression (not included in the summary). Keep conditions take
+// priority: a message matching both keep and drop is kept.
+func (c *CompressMemory) AddDropCondition(cond KeepCondition) {
+	c.dropConditions = append(c.dropConditions, cond)
 }
 
 func (c *CompressMemory) Add(msg Message) {
@@ -152,6 +176,19 @@ func (c *CompressMemory) Len() int {
 }
 
 func (c *CompressMemory) compress() {
+	// Pre-pass: globally remove messages that should be dropped (and not kept).
+	// This ensures dropConditions apply even to first/recent zones, not just middle.
+	if len(c.dropConditions) > 0 {
+		filtered := c.messages[:0:0] // empty slice, same backing array reuse avoided
+		for _, msg := range c.messages {
+			if c.shouldDrop(msg) && !c.shouldKeep(msg) {
+				continue // silently discard
+			}
+			filtered = append(filtered, msg)
+		}
+		c.messages = filtered
+	}
+
 	n := len(c.messages)
 	if n <= 3 {
 		return // need at least 3 messages to compress
@@ -173,16 +210,61 @@ func (c *CompressMemory) compress() {
 	middle := c.messages[middleStart:middleEnd]
 	recent := c.messages[middleEnd:]
 
-	// Compress middle using compactor (LLM or rule-based)
-	compressed := c.compactMiddle(middle)
+	// Three-way split: keep > drop > compress
+	// Priority: keep wins over drop; drop silently discards (not summarized)
+	var pinned []Message
+	var compressible []Message
+	for _, msg := range middle {
+		if c.shouldKeep(msg) {
+			pinned = append(pinned, msg)
+		} else if c.shouldDrop(msg) {
+			// silently discard — not included in summary
+		} else {
+			compressible = append(compressible, msg)
+		}
+	}
 
-	// Rebuild: [first 10%] [compressed middle] [last 10%]
-	result := make([]Message, 0, len(first)+1+len(recent))
+	// Compress the compressible portion (if any)
+	var compressedMsg *Message
+	if len(compressible) > 0 {
+		compressed := c.compactMiddle(compressible)
+		msg := NewUserMessage(compressed)
+		compressedMsg = &msg
+	}
+
+	// Rebuild: [first] [compressed summary] [pinned] [recent]
+	// Pinned messages go after compressed summary but before recent window
+	result := make([]Message, 0, len(first)+1+len(pinned)+len(recent))
 	result = append(result, first...)
-	result = append(result, NewUserMessage(compressed))
+	if compressedMsg != nil {
+		result = append(result, *compressedMsg)
+	}
+	result = append(result, pinned...)
 	result = append(result, recent...)
 
 	c.messages = result
+}
+
+// shouldKeep returns true if the message should be preserved during compression
+// based on registered keepConditions.
+func (c *CompressMemory) shouldKeep(msg Message) bool {
+	for _, cond := range c.keepConditions {
+		if cond(msg) {
+			return true
+		}
+	}
+	return false
+}
+
+// shouldDrop returns true if the message should be silently discarded during compression.
+// Keep conditions take priority: a message matching both keep and drop is kept.
+func (c *CompressMemory) shouldDrop(msg Message) bool {
+	for _, cond := range c.dropConditions {
+		if cond(msg) {
+			return true
+		}
+	}
+	return false
 }
 
 // compactMiddle compresses the middle portion of messages using the configured compactor.

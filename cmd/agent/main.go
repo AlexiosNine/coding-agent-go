@@ -18,6 +18,8 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -25,12 +27,15 @@ import (
 	"syscall"
 
 	cc "github.com/alexioschen/cc-connect/goagent"
+	"github.com/alexioschen/cc-connect/goagent/channel"
+	"github.com/alexioschen/cc-connect/goagent/channel/feishu"
 	"github.com/alexioschen/cc-connect/goagent/provider/anthropic"
 	"github.com/alexioschen/cc-connect/goagent/provider/openai"
 	"github.com/alexioschen/cc-connect/goagent/tool"
 )
 
 func main() {
+	mode := flag.String("mode", "cli", "Run mode: cli, repl, or bot")
 	providerName := flag.String("provider", "anthropic", "LLM provider: anthropic or openai")
 	model := flag.String("model", "", "Model name (default: provider-specific)")
 	system := flag.String("system", "You are a helpful assistant with access to tools.", "System prompt")
@@ -86,6 +91,12 @@ func main() {
 
 	agent := cc.New(opts...)
 
+	// Bot mode: run HTTP webhook server
+	if *mode == "bot" {
+		runBot(agent)
+		return
+	}
+
 	// Single-shot mode: pass query as argument
 	if args := flag.Args(); len(args) > 0 {
 		query := strings.Join(args, " ")
@@ -95,6 +106,36 @@ func main() {
 
 	// Interactive REPL mode
 	runREPL(agent, *streamMode)
+}
+
+func runBot(agent *cc.Agent) {
+	cfg := loadConfig()
+
+	// Validate Feishu configuration
+	if cfg.Feishu.AppID == "" || cfg.Feishu.AppSecret == "" {
+		fmt.Fprintln(os.Stderr, "Error: FEISHU_APP_ID and FEISHU_APP_SECRET must be set for bot mode")
+		os.Exit(1)
+	}
+
+	// Create Feishu channel
+	feishuCh := feishu.New(cfg.Feishu)
+
+	// Create session manager
+	mgr := channel.NewSessionManager(agent, cfg.Session)
+
+	// Create and configure webhook server
+	srv := channel.NewChannelServer(mgr)
+	srv.Register(feishuCh)
+
+	// Start HTTP server
+	log.Printf("Starting bot server on %s", cfg.Addr)
+	log.Printf("Webhook endpoint: http://localhost%s/webhook/feishu", cfg.Addr)
+	log.Printf("Health check: http://localhost%s/health", cfg.Addr)
+
+	if err := http.ListenAndServe(cfg.Addr, srv); err != nil {
+		fmt.Fprintf(os.Stderr, "Server error: %s\n", err)
+		os.Exit(1)
+	}
 }
 
 func runOnce(agent *cc.Agent, query string) {

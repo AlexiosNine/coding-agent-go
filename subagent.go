@@ -72,15 +72,14 @@ func (t *AgentTool) Execute(ctx context.Context, input json.RawMessage) (string,
 	// Create a session for the sub-agent
 	session := t.agent.NewSession()
 
-	// Inject parent context into system prompt if builder is configured
+	// Inject parent context into system suffix (not task message) so it survives
+	// compression in long sub-agent conversations.
 	if t.contextBuilder != nil {
 		// Get parent session's messages from the shared state if available
 		if parentSession := getParentSession(ctx); parentSession != nil {
 			contextStr := t.contextBuilder(parentSession.Messages())
 			if contextStr != "" {
-				// Temporarily override system prompt with context
-				originalSystem := t.agent.system
-				session.systemOverride = originalSystem + "\n\n## Parent Context\n" + contextStr
+				session.systemSuffix = "\n\n## Parent Context\n" + contextStr
 			}
 		}
 	}

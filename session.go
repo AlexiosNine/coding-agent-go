@@ -29,7 +29,7 @@ type Session struct {
 	activeSkills      []string // session-local active skill names
 	activeSkillsMu    sync.RWMutex // protects activeSkills
 	maxActiveSkills   int      // max concurrent active skills (default 3)
-	systemOverride    string   // if set, overrides agent.system for this session
+	systemSuffix      string   // appended to agent.system on every LLM call; survives compression
 }
 
 // Run executes the agent loop within this session's conversation context.
@@ -130,19 +130,15 @@ func (s *Session) Run(ctx context.Context, input string) (*RunResult, error) {
 		}
 
 		results := s.executeTools(ctx, toolUses)
+
+		// Update exploration budget (Consume before Add so compression sees correct state)
+		if s.explorationBudget != nil {
+			s.explorationBudget.Consume(toolUses, results)
+		}
+
 		s.memory.Add(NewToolResultMessage(results...))
 
-		// Unified exploration budget (replaces both consecutiveExplorationTurns and readTracker)
-		if s.explorationBudget != nil {
-			if nudge := s.explorationBudget.Consume(toolUses, results); nudge != "" {
-				s.memory.Add(NewUserMessage(nudge))
-				// Also inject into system override so nudge survives compression
-				s.systemOverride = s.agent.system + "\n\n" + nudge
-			} else if hasMutatingTool {
-				// Reset system override when agent starts editing
-				s.systemOverride = ""
-			}
-		} else {
+		if s.explorationBudget == nil {
 			// Legacy path: simple counter + ReadTracker
 			if hasMutatingTool {
 				consecutiveExplorationTurns = 0
@@ -181,9 +177,6 @@ func (s *Session) Run(ctx context.Context, input string) (*RunResult, error) {
 // step makes a single LLM call, with retry if configured.
 func (s *Session) step(ctx context.Context) (*ChatResponse, error) {
 	system := s.agent.system
-	if s.systemOverride != "" {
-		system = s.systemOverride
-	}
 	// Inject session facts into system prompt
 	if s.factCache != nil {
 		if facts := s.factCache.Render(); facts != "" {
@@ -197,6 +190,16 @@ func (s *Session) step(ctx context.Context) (*ChatResponse, error) {
 		}
 		if inst := s.skillRegistry.GetInstructions(s.getActiveSkills()); inst != "" {
 			system += "\n" + inst
+		}
+	}
+	// Append session-level suffix (e.g. sub-agent parent context); survives compression
+	if s.systemSuffix != "" {
+		system += s.systemSuffix
+	}
+	// Inject exploration nudge into system prompt when budget is exhausted
+	if s.explorationBudget != nil {
+		if nudge := s.explorationBudget.ActiveNudge(); nudge != "" {
+			system += "\n\n" + nudge
 		}
 	}
 
@@ -459,6 +462,12 @@ func (s *Session) RunStream(ctx context.Context, input string) (<-chan StreamEve
 			}
 
 			results := s.executeTools(ctx, toolUses)
+
+			// Update exploration budget
+			if s.explorationBudget != nil {
+				s.explorationBudget.Consume(toolUses, results)
+			}
+
 			s.memory.Add(NewToolResultMessage(results...))
 		}
 
@@ -471,9 +480,6 @@ func (s *Session) RunStream(ctx context.Context, input string) (<-chan StreamEve
 // streamStep attempts to stream from the provider, falling back to Chat().
 func (s *Session) streamStep(ctx context.Context, out chan<- StreamEvent) (*ChatResponse, error) {
 	system := s.agent.system
-	if s.systemOverride != "" {
-		system = s.systemOverride
-	}
 	// Inject session facts into system prompt
 	if s.factCache != nil {
 		if facts := s.factCache.Render(); facts != "" {
@@ -487,6 +493,16 @@ func (s *Session) streamStep(ctx context.Context, out chan<- StreamEvent) (*Chat
 		}
 		if inst := s.skillRegistry.GetInstructions(s.getActiveSkills()); inst != "" {
 			system += "\n" + inst
+		}
+	}
+	// Append session-level system suffix (e.g., subagent parent context)
+	if s.systemSuffix != "" {
+		system += s.systemSuffix
+	}
+	// Inject exploration nudge into system prompt when budget is exhausted
+	if s.explorationBudget != nil {
+		if nudge := s.explorationBudget.ActiveNudge(); nudge != "" {
+			system += "\n\n" + nudge
 		}
 	}
 
