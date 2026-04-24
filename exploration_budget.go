@@ -28,14 +28,18 @@ func NewExplorationBudget(budget int) *ExplorationBudget {
 	}
 }
 
-// Consume processes a batch of tool uses, deducting tokens.
+// Consume processes a batch of tool uses and their results, deducting tokens.
+// Only resets budget when a mutating tool succeeds (not on error).
 // Returns a nudge string if budget is exhausted, or "" otherwise.
-func (b *ExplorationBudget) Consume(toolUses []ToolUseContent) string {
-	// Check for any mutating tool first
-	for _, tu := range toolUses {
+func (b *ExplorationBudget) Consume(toolUses []ToolUseContent, results []ToolResultContent) string {
+	// Check for any successful mutating tool
+	for i, tu := range toolUses {
 		if isMutatingToolUse(tu) {
-			b.Reset()
-			return ""
+			// Only reset if the tool succeeded (not an error)
+			if i < len(results) && !results[i].IsError {
+				b.Reset()
+				return ""
+			}
 		}
 	}
 

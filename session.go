@@ -134,7 +134,7 @@ func (s *Session) Run(ctx context.Context, input string) (*RunResult, error) {
 
 		// Unified exploration budget (replaces both consecutiveExplorationTurns and readTracker)
 		if s.explorationBudget != nil {
-			if nudge := s.explorationBudget.Consume(toolUses); nudge != "" {
+			if nudge := s.explorationBudget.Consume(toolUses, results); nudge != "" {
 				s.memory.Add(NewUserMessage(nudge))
 				// Also inject into system override so nudge survives compression
 				s.systemOverride = s.agent.system + "\n\n" + nudge

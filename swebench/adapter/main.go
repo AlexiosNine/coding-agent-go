@@ -151,7 +151,7 @@ PATTERN: explore (5 turns) → edit (1-2 turns) → done (1 turn)`,
 	baseURL := os.Getenv("OPENAI_BASE_URL")
 	model := os.Getenv("LLM_MODEL")
 	if model == "" {
-		model = "xop3qwen32b"
+		model = "xopkimik25"
 	}
 
 	var providerOpts []openai.Option
@@ -190,7 +190,7 @@ PATTERN: explore (5 turns) → edit (1-2 turns) → done (1 turn)`,
 	agent := cc.New(
 		cc.WithProvider(provider),
 		cc.WithModel(model),
-		cc.WithMaxTokens(102400),
+		cc.WithMaxTokens(8192),
 		cc.WithTurnDelay(turnDelay),
 		cc.WithTokenAwareCompressMemory(20000, 3),
 		cc.WithToolOutputMaxSize(8000),
