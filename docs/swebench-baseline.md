@@ -99,6 +99,42 @@ Use these files as the source of truth:
 
 `adapter.log` is for debugging. Do not compute benchmark results from it when `metrics.json` exists.
 
+## HTML Dashboard
+
+Run the local dashboard:
+
+```bash
+go run ./swebench/dashboard
+```
+
+Default URL:
+
+```text
+http://127.0.0.1:8765
+```
+
+Useful options:
+
+```bash
+go run ./swebench/dashboard \
+  --addr 127.0.0.1:8765 \
+  --workspace /path/to/coding/workspace \
+  --provider openai \
+  --model xopkimik25 \
+  --max-turns 20 \
+  --runs swebench/runs \
+  --suite-runs swebench/suite_runs
+```
+
+Pages:
+
+| Path | Purpose |
+| --- | --- |
+| `/` | Command-line style coding-agent chat. The agent can inspect and edit files inside the configured workspace. |
+| `/eval` | Read-only SWE-bench evaluation status page. |
+
+The chat page uses a strict filesystem sandbox rooted at `--workspace`. The evaluation page scans run directories, reads `metrics.json` and `events.jsonl`, and links to per-run artifacts such as patch, summary, adapter log, and runner logs.
+
 ## Verifier Rules
 
 `swebench/verify_patch.sh` currently supports only the three golden cases.
