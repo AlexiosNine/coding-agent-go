@@ -1,0 +1,1 @@
+- grep: use targeted patterns and paths; avoid broad repeat searches once a definition or insertion point is found.

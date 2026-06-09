@@ -26,3 +26,6 @@ Thumbs.db
 .env.*
 .ace-tool/
 .gocache/
+swebench/runs/
+swebench/suite_runs/
+swebench/workspace/

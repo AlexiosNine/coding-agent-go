@@ -3,7 +3,7 @@
 # Validates that ccode(sinc(x)) produces valid C code after patching
 set -e
 
-REPO_PATH="/tmp/swebench/sympy__sympy-11400"
+REPO_PATH="${SWE_REPO_PATH:-/tmp/swebench/sympy__sympy-11400}"
 PATCH_FILE="${1:-/tmp/test_patch.diff}"
 
 echo "=== SWE-bench Patch Verification ==="

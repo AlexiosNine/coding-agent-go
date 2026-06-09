@@ -147,6 +147,41 @@ func TestEditFile_NormalizedMatch(t *testing.T) {
 	}
 }
 
+func TestEditFile_InsertAfterLine(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "test.py")
+	os.WriteFile(f, []byte("class Printer:\n    def first(self):\n        pass\n"), 0644)
+
+	tool := EditFile()
+	out, err := tool.Execute(nil, mustJSON(editFileInput{
+		Path:            f,
+		InsertAfterLine: 3,
+		NewString:       "\n    def second(self):\n        return 2",
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "Inserted") {
+		t.Fatalf("expected insert output, got %q", out)
+	}
+
+	data, _ := os.ReadFile(f)
+	content := string(data)
+	if !strings.Contains(content, "    def second(self):\n        return 2\n") {
+		t.Fatalf("file missing inserted method:\n%s", content)
+	}
+}
+
+func TestEditFile_InsertBeforeLine(t *testing.T) {
+	got, err := insertAtLine("a\nc\n", "b", 0, 2)
+	if err != nil {
+		t.Fatalf("insertAtLine: %v", err)
+	}
+	if got != "a\nb\nc\n" {
+		t.Fatalf("unexpected content: %q", got)
+	}
+}
+
 func TestFindSimilarContent_MultiLine(t *testing.T) {
 	content := "line1\nline2\nfunc foo() {\n\treturn 1\n}\nline6\nline7"
 	oldString := "func foo() {\n    return 999\n}"

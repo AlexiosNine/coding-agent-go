@@ -1,0 +1,1 @@
+- edit_file: use exact old_string/new_string replacements for replacements. For inserting a new method or mapping at a known line, use insert_after_line or insert_before_line with new_string instead of rereading for a long old_string. After success, do not re-read just to verify.

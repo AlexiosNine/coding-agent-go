@@ -49,7 +49,10 @@ func (b *ExplorationBudget) Consume(toolUses []ToolUseContent, results []ToolRes
 
 	// Deduct tokens for read-only tools
 	for _, tu := range toolUses {
-		cost := 1
+		cost := explorationToolCost(tu)
+		if cost == 0 {
+			continue
+		}
 		// Repeated read costs 2
 		if nudge := b.tracker.Track([]ToolUseContent{tu}); nudge != "" {
 			cost = 2
@@ -61,9 +64,18 @@ func (b *ExplorationBudget) Consume(toolUses []ToolUseContent, results []ToolRes
 	if b.remaining <= 0 && !b.nudgeActive {
 		b.nudgeActive = true
 		b.nudgeMsg = fmt.Sprintf(
-			"%s (%d/%d tokens used). You MUST use edit_file now to make changes, or respond with text if no changes are needed.",
+			"%s (%d/%d tokens used). Your next tool call MUST be edit_file. Do not call grep, read_file, or list_files again. If you cannot make a concrete edit from the current context, stop and respond with text explaining why.",
 			NudgePrefix, b.budget-b.remaining, b.budget,
 		)
+	}
+}
+
+func explorationToolCost(tu ToolUseContent) int {
+	switch tu.Name {
+	case "grep":
+		return 0
+	default:
+		return 1
 	}
 }
 

@@ -3,6 +3,8 @@ package cc_test
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	cc "github.com/alexioschen/cc-connect/goagent"
@@ -70,6 +72,38 @@ func TestSandbox_PathWhitelist(t *testing.T) {
 	}
 	if err := s.CheckPath("/home/user/.ssh/id_rsa"); err == nil {
 		t.Error("expected SSH key path to be blocked")
+	}
+}
+
+func TestSandbox_PathWhitelistBlocksSymlinkEscape(t *testing.T) {
+	tmpDir := t.TempDir()
+	workspace := filepath.Join(tmpDir, "workspace")
+	outside := filepath.Join(tmpDir, "outside")
+	if err := os.MkdirAll(workspace, 0755); err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	if err := os.MkdirAll(outside, 0755); err != nil {
+		t.Fatalf("create outside dir: %v", err)
+	}
+	outsideFile := filepath.Join(outside, "secret.txt")
+	if err := os.WriteFile(outsideFile, []byte("secret"), 0644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+
+	link := filepath.Join(workspace, "link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	s := cc.StrictSandbox([]string{workspace})
+	if err := s.CheckPath(filepath.Join(link, "secret.txt")); err == nil {
+		t.Fatal("expected existing path through symlink to outside dir to be blocked")
+	}
+	if err := s.CheckPath(filepath.Join(link, "new.txt")); err == nil {
+		t.Fatal("expected new path through symlinked parent to outside dir to be blocked")
+	}
+	if err := s.CheckPath(filepath.Join(workspace, "new", "file.txt")); err != nil {
+		t.Fatalf("expected new file under workspace to be allowed: %v", err)
 	}
 }
 

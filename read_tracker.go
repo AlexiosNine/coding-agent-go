@@ -16,8 +16,7 @@ const regionSize = 50 // lines per region bucket
 // and 240-265 both count as reading region #5 (lines 250-299).
 type ReadTracker struct {
 	regionReads map[string]int // "path#region" -> read count
-	totalReads  int
-	threshold   int // nudge after this many reads of same region
+	threshold   int            // nudge after this many reads of same region
 }
 
 func NewReadTracker() *ReadTracker {
@@ -39,16 +38,15 @@ func (t *ReadTracker) Track(toolUses []ToolUseContent) string {
 				}
 			}
 		case "grep", "list_files":
-			path := extractPath(tu.Input)
-			if path != "" {
-				t.regionReads[path+"#all"]++
-				t.totalReads++
-			}
+			// Grep/list calls are exploration budget signals, but they are not
+			// file-region reads. Counting them as whole-file reads makes normal
+			// "grep symbol -> grep method -> read range" flows look like repeated
+			// reads and can hard-stop before the model has an edit anchor.
+			continue
 		case "shell":
 			cmd := extractShellCommand(tu.Input)
 			if isWriteShell(cmd) {
 				t.regionReads = make(map[string]int)
-				t.totalReads = 0
 				return ""
 			}
 			if isReadOnlyShell(cmd) {
@@ -61,13 +59,8 @@ func (t *ReadTracker) Track(toolUses []ToolUseContent) string {
 			}
 		case "write_file", "edit_file":
 			t.regionReads = make(map[string]int)
-			t.totalReads = 0
 			return ""
 		}
-	}
-
-	if t.totalReads >= t.threshold*3 {
-		return fmt.Sprintf("[System notice] You have made %d read operations without any code changes. You likely have enough context. Please use edit_file now to make the fix, or respond with text if no changes are needed.", t.totalReads)
 	}
 
 	return ""
@@ -78,7 +71,6 @@ func (t *ReadTracker) trackRegions(path string, startLine, endLine int) string {
 	if startLine <= 0 && endLine <= 0 {
 		// No line info, track as whole-file read
 		t.regionReads[path+"#all"]++
-		t.totalReads++
 		if t.regionReads[path+"#all"] >= t.threshold {
 			return fmt.Sprintf("[System notice] You have read %q %d times. You likely have enough information. Please use edit_file to modify the code now, or respond with text if no changes are needed.", path, t.regionReads[path+"#all"])
 		}
@@ -98,7 +90,6 @@ func (t *ReadTracker) trackRegions(path string, startLine, endLine int) string {
 	for r := startRegion; r <= endRegion; r++ {
 		key := fmt.Sprintf("%s#%d", path, r)
 		t.regionReads[key]++
-		t.totalReads++
 		if t.regionReads[key] >= t.threshold {
 			regionStart := r*regionSize + 1
 			regionEnd := (r + 1) * regionSize
@@ -114,8 +105,18 @@ func extractPathAndLines(input json.RawMessage) (string, int, int) {
 		Path      string `json:"path"`
 		StartLine int    `json:"start_line"`
 		EndLine   int    `json:"end_line"`
+		Offset    int    `json:"offset"`
+		Limit     int    `json:"limit"`
 	}
 	if json.Unmarshal(input, &raw) == nil {
+		if raw.StartLine <= 0 && raw.EndLine <= 0 && raw.Offset > 0 {
+			startLine := raw.Offset + 1
+			limit := raw.Limit
+			if limit <= 0 {
+				limit = 500
+			}
+			return raw.Path, startLine, startLine + limit - 1
+		}
 		return raw.Path, raw.StartLine, raw.EndLine
 	}
 	return "", 0, 0

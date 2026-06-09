@@ -3,6 +3,7 @@ package cc
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -24,18 +25,18 @@ func DefaultSandbox() *Sandbox {
 	return &Sandbox{
 		BlockedPatterns: []*regexp.Regexp{
 			// Dangerous rm patterns
-			regexp.MustCompile(`rm\s+(-[rf]+\s+)?[/*]`),                    // rm -rf /, rm /*
-			regexp.MustCompile(`rm\s+(-[rf]+\s+)?\.\*`),                    // rm -rf .*
-			regexp.MustCompile(`rm\s+(-[rf]+\s+)?~`),                       // rm -rf ~
-			regexp.MustCompile(`rm\s+(-[rf]+\s+)?/[a-z]+`),                 // rm -rf /usr, /etc, etc.
+			regexp.MustCompile(`rm\s+(-[rf]+\s+)?[/*]`),    // rm -rf /, rm /*
+			regexp.MustCompile(`rm\s+(-[rf]+\s+)?\.\*`),    // rm -rf .*
+			regexp.MustCompile(`rm\s+(-[rf]+\s+)?~`),       // rm -rf ~
+			regexp.MustCompile(`rm\s+(-[rf]+\s+)?/[a-z]+`), // rm -rf /usr, /etc, etc.
 
 			// Dangerous system operations
-			regexp.MustCompile(`mkfs`),                                      // format filesystem
-			regexp.MustCompile(`dd\s+.*of=/dev/`),                          // overwrite disk
-			regexp.MustCompile(`:\(\)\{.*:\|:.*\};:`),                      // fork bomb
-			regexp.MustCompile(`chmod\s+777`),                              // dangerous permissions
-			regexp.MustCompile(`curl.*\|\s*(bash|sh)`),                     // pipe to shell
-			regexp.MustCompile(`wget.*\|\s*(bash|sh)`),                     // pipe to shell
+			regexp.MustCompile(`mkfs`),                 // format filesystem
+			regexp.MustCompile(`dd\s+.*of=/dev/`),      // overwrite disk
+			regexp.MustCompile(`:\(\)\{.*:\|:.*\};:`),  // fork bomb
+			regexp.MustCompile(`chmod\s+777`),          // dangerous permissions
+			regexp.MustCompile(`curl.*\|\s*(bash|sh)`), // pipe to shell
+			regexp.MustCompile(`wget.*\|\s*(bash|sh)`), // pipe to shell
 
 			// Privilege escalation
 			regexp.MustCompile(`sudo\s+rm`),
@@ -55,20 +56,59 @@ func (s *Sandbox) CheckPath(path string) error {
 	if err != nil {
 		return fmt.Errorf("invalid path: %w", err)
 	}
+	resolvedPath, err := resolveSandboxPath(absPath)
+	if err != nil {
+		return fmt.Errorf("invalid path: %w", err)
+	}
 
 	for _, allowed := range s.AllowedPaths {
 		allowedAbs, err := filepath.Abs(allowed)
 		if err != nil {
 			continue
 		}
+		resolvedAllowed, err := resolveSandboxPath(allowedAbs)
+		if err != nil {
+			continue
+		}
 		// Check if path is within allowed directory
-		rel, err := filepath.Rel(allowedAbs, absPath)
-		if err == nil && !strings.HasPrefix(rel, "..") {
+		rel, err := filepath.Rel(resolvedAllowed, resolvedPath)
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			return nil // path is within allowed directory
 		}
 	}
 
 	return fmt.Errorf("access denied: %s is outside allowed paths", absPath)
+}
+
+func resolveSandboxPath(path string) (string, error) {
+	clean := filepath.Clean(path)
+	if _, err := os.Lstat(clean); err == nil {
+		return filepath.EvalSymlinks(clean)
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+
+	var missing []string
+	for current := clean; ; current = filepath.Dir(current) {
+		if _, err := os.Lstat(current); err == nil {
+			resolvedParent, err := filepath.EvalSymlinks(current)
+			if err != nil {
+				return "", err
+			}
+			for i := len(missing) - 1; i >= 0; i-- {
+				resolvedParent = filepath.Join(resolvedParent, missing[i])
+			}
+			return resolvedParent, nil
+		} else if !os.IsNotExist(err) {
+			return "", err
+		}
+
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", fmt.Errorf("no existing parent for %s", path)
+		}
+		missing = append(missing, filepath.Base(current))
+	}
 }
 
 // CheckCommand validates if a shell command is allowed.

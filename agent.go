@@ -2,6 +2,7 @@ package cc
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"time"
 )
@@ -14,23 +15,23 @@ const (
 // Agent is the core runtime that orchestrates LLM calls and tool execution.
 // Agent itself is stateless — conversation state lives in Session.
 type Agent struct {
-	provider            Provider
-	tools               map[string]Tool
-	cachedToolDefs      []ToolDef
-	system              string
-	model               string
-	maxTurns            int
-	maxTokens           int
-	maxConcurrency      int
-	maxExplorationTurns int // abort if this many consecutive turns have no edit/write (0 = disabled)
-	explorationBudget   int // exploration budget tokens (0 = disabled, use ReadTracker instead)
-	retry               *RetryConfig
-	toolRetry           *RetryConfig // retry config for tool execution (nil = no retry)
-	hooks               Hooks
-	memoryFactory       func() Memory
-	approver            Approver   // tool approval strategy
-	sandbox             *Sandbox   // file/command access restrictions
-	osSandbox           *OSSandbox // OS-level sandbox (opt-in)
+	provider             Provider
+	tools                map[string]Tool
+	cachedToolDefs       []ToolDef
+	system               string
+	model                string
+	maxTurns             int
+	maxTokens            int
+	maxConcurrency       int
+	maxExplorationTurns  int // abort if this many consecutive turns have no edit/write (0 = disabled)
+	explorationBudget    int // exploration budget tokens (0 = disabled, use ReadTracker instead)
+	retry                *RetryConfig
+	toolRetry            *RetryConfig // retry config for tool execution (nil = no retry)
+	hooks                Hooks
+	memoryFactory        func() Memory
+	approver             Approver   // tool approval strategy
+	sandbox              *Sandbox   // file/command access restrictions
+	osSandbox            *OSSandbox // OS-level sandbox (opt-in)
 	toolOutputCompressor *ToolOutputCompressor
 	toolResultSummarizer *ToolResultSummarizer
 	sessionFactCacheSize int // 0 = disabled
@@ -38,15 +39,21 @@ type Agent struct {
 	turnDelay            time.Duration // delay between turns for rate limiting (0 = disabled)
 	toolTimeout          time.Duration // timeout for individual tool execution (0 = no timeout)
 	llmCompactionModel   string        // model for LLM-based context compaction (empty = disabled)
-	closers             []io.Closer // MCP clients and other resources to clean up
+	eventSink            EventSink
+	runID                string
+	convergenceGuard     *ConvergenceGuardConfig
+	closers              []io.Closer // MCP clients and other resources to clean up
 }
 
 // RunResult contains the outcome of an agent run.
 type RunResult struct {
-	Output   string
-	Messages []Message
-	Turns    int
-	Usage    Usage
+	Output      string
+	Messages    []Message
+	Turns       int
+	Usage       Usage
+	StopReason  string
+	GuardReason string
+	Metrics     RunMetrics
 }
 
 // New creates a new Agent with the given options.
@@ -63,14 +70,37 @@ func New(opts ...Option) *Agent {
 	return a
 }
 
+// Clone creates a new Agent with the same provider, tools, prompts, and runtime
+// options as this Agent, then applies any additional overrides.
+func (a *Agent) Clone(opts ...Option) *Agent {
+	clone := *a
+	clone.tools = make(map[string]Tool, len(a.tools))
+	for name, tool := range a.tools {
+		clone.tools[name] = tool
+	}
+	clone.cachedToolDefs = nil
+	clone.closers = nil
+
+	for _, opt := range opts {
+		opt(&clone)
+	}
+	return &clone
+}
+
 // NewSession creates a new conversation session with independent memory.
 func (a *Agent) NewSession() *Session {
+	runID := a.runID
+	if runID == "" {
+		runID = fmt.Sprintf("run_%d", time.Now().UnixNano())
+	}
 	s := &Session{
 		agent:        a,
 		memory:       a.memoryFactory(),
 		outputBuffer: NewOutputBuffer(50 << 20),
 		dedup:        NewMessageDeduplicator(),
 		summarizer:   a.toolResultSummarizer,
+		runID:        runID,
+		guardTracker: NewReadTracker(),
 	}
 	// Inject LLM compactor if configured and memory supports it
 	if a.llmCompactionModel != "" && a.provider != nil {

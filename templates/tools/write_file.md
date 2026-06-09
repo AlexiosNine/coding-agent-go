@@ -1,0 +1,1 @@
+- write_file: use only for new files or complete rewrites; prefer edit_file for targeted changes.

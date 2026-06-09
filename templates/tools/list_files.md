@@ -1,0 +1,1 @@
+- list_files: use only when the relevant directory is unknown; prefer grep when searching for symbols or text.

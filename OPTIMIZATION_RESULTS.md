@@ -138,6 +138,71 @@ agent := cc.New(
 )
 ```
 
+### 2026-06-01 Small-Case Configuration
+
+The current SWE-bench work is intentionally scoped to a 3-case loop instead of a broad run:
+
+- `django__django-11179`
+- `sympy__sympy-11400`
+- `pytest-dev__pytest-11143`
+
+The adapter now prepares a local per-instance workspace and runs the agent from inside that checkout:
+
+- Default workspace root: `goagent/swebench/workspace`
+- Per-case path: `goagent/swebench/workspace/<instance_id>`
+- Override: `SWE_WORKSPACE_ROOT=/absolute/path`
+- Logs: `<workspace_root>/logs/<instance_id>.log`
+- Patches: `<workspace_root>/patches/<instance_id>.patch`
+
+Each workspace is reset to the benchmark base commit before a run:
+
+```text
+git checkout <base_commit>
+git reset --hard <base_commit>
+git clean -fd
+```
+
+The default toolset is now deliberately small:
+
+```text
+SWE_TOOLSET=lean: grep, read_file, edit_file
+SWE_TOOLSET=full: read_file, write_file, edit_file, list_files, grep
+```
+
+`shell` is excluded from both toolsets for this benchmark path. The adapter also applies `WithStrictSandbox(workDir)`, so file tools are scoped to the prepared case workspace.
+
+Current runtime knobs:
+
+| Env var | Default | Purpose |
+|---------|---------|---------|
+| `SWE_MAX_TOKENS` | `4096` | Max model output tokens per response |
+| `SWE_CONTEXT_WINDOW` | `12000` | Token-aware memory compression threshold |
+| `SWE_RECENT_WINDOW` | `4` | Recent messages preserved during compression |
+| `SWE_TOOL_OUTPUT_CHARS` | `5000` | Max retained tool output size |
+| `SWE_TOOL_SUMMARY_CHARS` | `1000` | Max structured tool summary size |
+| `SWE_EXPLORATION_BUDGET` | `10` | Read/exploration budget before edit nudge |
+| `SWE_MAX_TURNS` | `18` | Max agent turns per case |
+| `SWE_TOOLSET` | `lean` | Toolset selection |
+| `TURN_DELAY` | `15s` | Delay between model turns |
+
+Runner usage for the fixed 3-case loop:
+
+```bash
+cd /Users/alexioschen/Documents/cc-connect/goagent/swebench/runner
+
+KEY=$(perl -ne 'print "$1\n" if /apiKey = "([^"]+)"/' ../../e2e_test.go | head -1)
+BASE=$(perl -ne 'print "$1\n" if /baseURL = "([^"]+)"/' ../../e2e_test.go | head -1)
+
+OPENAI_API_KEY="$KEY" OPENAI_BASE_URL="$BASE" LLM_MODEL=xopkimik25 \
+TURN_DELAY=0 SWE_TOOLSET=lean SWE_MAX_TURNS=18 SWE_EXPLORATION_BUDGET=10 \
+SWE_MAX_TOKENS=4096 SWE_TOOL_OUTPUT_CHARS=5000 SWE_TOOL_SUMMARY_CHARS=1000 \
+./runner --dataset ../../../swebench_lite.json \
+  --instances django__django-11179,sympy__sympy-11400,pytest-dev__pytest-11143 \
+  --output /tmp/goagent-smallcases-lean.jsonl
+```
+
+The command extracts secrets into local shell variables and passes them only to the child process. Do not paste the extracted key into docs, logs, or committed config.
+
 ---
 
 ## Test Environment Challenges
@@ -153,7 +218,16 @@ export OPENAI_BASE_URL="${ANTHROPIC_BASE_URL}"
 export LLM_MODEL="xopkimik25"
 ```
 
-**Issue**: `ANTHROPIC_API_KEY` is empty in the current session, preventing end-to-end testing.
+**Current status**: local fallback config is available in the e2e test files, so native tool-calling e2e can be run when outbound network/API access is allowed.
+
+**Current local fallback**: `e2e_test.go` and `subagent_e2e_test.go` contain fallback OpenAI-compatible config for local e2e tests. The safe extraction pattern is:
+
+```bash
+KEY=$(perl -ne 'print "$1\n" if /apiKey = "([^"]+)"/' e2e_test.go | head -1)
+BASE=$(perl -ne 'print "$1\n" if /baseURL = "([^"]+)"/' e2e_test.go | head -1)
+```
+
+Use `KEY` as `OPENAI_API_KEY` and `BASE` as `OPENAI_BASE_URL`. The fallback `base_url` is `https://maas-api.cn-huabei-1.xf-yun.com/v2`; the secret value should not be copied into this document.
 
 ### API Stability
 
@@ -174,19 +248,19 @@ All unit tests pass for:
 - CircuitBreaker (state transitions, cooldown)
 - ToolTimeout (context cancellation)
 
-### Integration Tests: ⏸️ BLOCKED
+### Integration Tests: ✅ TOOL CALLING VERIFIED
 
-**Reason**: xf-yun API does not support OpenAI function calling
+The current local OpenAI-compatible xf-yun configuration has been verified with native tool calling:
 
-**Verification**:
-- Simple request (no tools): ✅ Status 200
-- Request with tools: ❌ Status 500 "RequestParamsError:Invalid Params"
+```bash
+OPENAI_API_KEY="$KEY" OPENAI_BASE_URL="$BASE" LLM_MODEL=xopkimik25 \
+GOCACHE=/private/tmp/goagent-gocache \
+go test -tags e2e -run TestE2E_ToolCalling -count=1 -v .
+```
 
-The xf-yun xop3qwen32b model does not support the OpenAI `tools` parameter for function calling, which is required by the SWE-bench adapter. The adapter relies heavily on tool calling (shell, read_file, edit_file, grep, etc.) to interact with the codebase.
+Result: the e2e tool-calling test passed in 2 turns.
 
-**Workarounds**:
-1. Use an API that supports function calling (OpenAI, Anthropic, compatible providers)
-2. Rewrite adapter to use prompt-based tool calling (describe tools in system prompt, parse from text)
+Note: network/API tests may require sandbox escalation in Codex because DNS and outbound network are restricted by default.
 
 **Expected Behavior** (after fixes, with compatible API):
 - ExplorationBudget should trigger nudge after 15 read-only tool calls
@@ -247,11 +321,12 @@ export OPENAI_BASE_URL="<your-base-url>"
 
 ## Next Steps
 
-1. **Obtain API Key**: Configure `OPENAI_API_KEY` for end-to-end testing
-2. **Run Full Test Suite**: Test all 6 SWE-bench cases (sympy, django, matplotlib, seaborn, pytest, xarray)
-3. **Collect Metrics**: Turn count, token consumption, success rate
-4. **Compare with Baseline**: Validate optimization ROI
-5. **Document Findings**: Update this file with actual test results
+1. **Run Fixed 3-Case Loop**: Execute the selected Django/SymPy/Pytest cases with `SWE_TOOLSET=lean`.
+2. **Collect Metrics**: Parse logs for turn count, tool calls, exploration-budget nudges, patch size, and prediction success.
+3. **Compare Lean vs Full**: Re-run the exact same cases with `SWE_TOOLSET=full` and compare success/token tradeoffs.
+4. **Generalize Verification**: Replace the current SymPy-specific verifier script with per-repo/per-instance verification.
+5. **Add Repo Cache**: Use a local git mirror/cache so workspace preparation does not depend on repeated remote clone.
+6. **Improve Read/Edit Precision**: Add line-numbered compact reads or grep-to-read range hints to reduce edit misses.
 
 ---
 
@@ -299,5 +374,5 @@ Covers 6 common issues:
 
 ---
 
-**Last Updated**: 2026-04-22
-**Status**: Phase 1+2+2.5 complete, integration testing blocked by missing API key
+**Last Updated**: 2026-06-01
+**Status**: Phase 1+2+2.5 complete; current focus is fixed 3-case SWE-bench loop with local workspace isolation

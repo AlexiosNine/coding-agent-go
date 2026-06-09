@@ -44,6 +44,7 @@ func (s *ToolResultSummarizer) Summarize(toolName, output string) string {
 }
 
 var defClassRe = regexp.MustCompile(`(?m)^\s*(?:def |class )\w+`)
+var readFileMetaRe = regexp.MustCompile(`^File: ([^\n]+)\nLines: (\d+)-(\d+) of (\d+)\nContent:\n`)
 
 // summarizeGrep keeps the header line + all match lines (file:line format).
 func (s *ToolResultSummarizer) summarizeGrep(output string) string {
@@ -74,6 +75,11 @@ func (s *ToolResultSummarizer) summarizeReadFile(output string) string {
 		output = output[:idx]
 	}
 
+	meta, content := parseReadFileMeta(output)
+	if content != "" {
+		output = content
+	}
+
 	lines := strings.Split(output, "\n")
 
 	// Extract def/class signatures with line numbers
@@ -84,13 +90,21 @@ func (s *ToolResultSummarizer) summarizeReadFile(output string) string {
 			if len(sig) > 60 {
 				sig = sig[:60] + "..."
 			}
-			signatures = append(signatures, fmt.Sprintf("  line %d: %s", i+1, sig))
+			lineNo := i + 1
+			if meta.startLine > 0 {
+				lineNo = meta.startLine + i
+			}
+			signatures = append(signatures, fmt.Sprintf("  line %d: %s", lineNo, sig))
 		}
 	}
 
 	// Build header with symbol index
 	var header strings.Builder
-	fmt.Fprintf(&header, "[%d lines read]\n", len(lines))
+	if meta.path != "" {
+		fmt.Fprintf(&header, "[%d lines read from %s lines %d-%d of %d]\n", len(lines), meta.path, meta.startLine, meta.endLine, meta.totalLines)
+	} else {
+		fmt.Fprintf(&header, "[%d lines read]\n", len(lines))
+	}
 	if len(signatures) > 0 {
 		header.WriteString("Symbols found:\n")
 		for _, sig := range signatures {
@@ -110,14 +124,34 @@ func (s *ToolResultSummarizer) summarizeReadFile(output string) string {
 	}
 
 	headerStr := header.String()
-	content := strings.Join(lines, "\n")
-	if len(content) <= contentBudget {
-		return headerStr + "Content:\n" + content + nudge
+	body := strings.Join(lines, "\n")
+	if len(body) <= contentBudget {
+		return headerStr + "Content:\n" + body + nudge
 	}
 
 	headSize := contentBudget * 6 / 10
 	tailSize := contentBudget - headSize
-	return headerStr + "Content:\n" + content[:headSize] + "\n...\n" + content[len(content)-tailSize:] + nudge
+	return headerStr + "Content:\n" + body[:headSize] + "\n...\n" + body[len(body)-tailSize:] + nudge
+}
+
+type readFileMeta struct {
+	path       string
+	startLine  int
+	endLine    int
+	totalLines int
+}
+
+func parseReadFileMeta(output string) (readFileMeta, string) {
+	m := readFileMetaRe.FindStringSubmatch(output)
+	if len(m) != 5 {
+		return readFileMeta{}, ""
+	}
+	var meta readFileMeta
+	meta.path = m[1]
+	_, _ = fmt.Sscanf(m[2], "%d", &meta.startLine)
+	_, _ = fmt.Sscanf(m[3], "%d", &meta.endLine)
+	_, _ = fmt.Sscanf(m[4], "%d", &meta.totalLines)
+	return meta, output[len(m[0]):]
 }
 
 // summarizeShell keeps exit info + last N lines.

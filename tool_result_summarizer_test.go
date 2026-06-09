@@ -85,6 +85,32 @@ def standalone_func():
 	}
 }
 
+func TestToolResultSummarizer_ReadFileSummaryUsesAbsoluteLines(t *testing.T) {
+	s := NewToolResultSummarizer(1000)
+	output := `File: sympy/functions/elementary/trigonometric.py
+Lines: 1620-1720 of 2300
+Content:
+class sinc(TrigonometricFunction):
+    def fdiff(self, argindex=1):
+        pass
+
+    def _eval_rewrite_as_sin(self, arg):
+        return sin(arg) / arg
+` + strings.Repeat("# padding line\n", 200)
+
+	result := s.Summarize("read_file", output)
+
+	if !strings.Contains(result, "lines 1620-1720 of 2300") {
+		t.Fatalf("expected absolute range in summary, got: %s", result)
+	}
+	if !strings.Contains(result, "line 1620: class sinc") {
+		t.Fatalf("expected absolute class line, got: %s", result)
+	}
+	if !strings.Contains(result, "line 1621: def fdiff") {
+		t.Fatalf("expected absolute method line, got: %s", result)
+	}
+}
+
 func TestToolResultSummarizer_ShellSummary(t *testing.T) {
 	s := NewToolResultSummarizer(200)
 	lines := make([]string, 100)

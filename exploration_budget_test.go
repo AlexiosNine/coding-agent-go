@@ -2,6 +2,7 @@ package cc
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -42,6 +43,27 @@ func TestExplorationBudget_RepeatedReadCostsMore(t *testing.T) {
 	}
 }
 
+func TestExplorationBudget_OffsetLimitReadCostsMore(t *testing.T) {
+	b := NewExplorationBudget(10)
+
+	for range 3 {
+		toolUses := []ToolUseContent{
+			{Name: "read_file", Input: mustMarshal(map[string]any{
+				"path":   "test.go",
+				"offset": 50,
+				"limit":  20,
+			})},
+		}
+		b.Consume(toolUses, []ToolResultContent{})
+	}
+
+	// offset/limit maps to lines 51-70, so repeated pagination reads
+	// should be charged like equivalent start_line/end_line reads.
+	if b.Remaining() != 6 {
+		t.Errorf("expected 6 remaining after repeated offset reads, got %d", b.Remaining())
+	}
+}
+
 func TestExplorationBudget_ResetOnMutation(t *testing.T) {
 	b := NewExplorationBudget(10)
 
@@ -52,8 +74,8 @@ func TestExplorationBudget_ResetOnMutation(t *testing.T) {
 		{Name: "grep", Input: mustMarshal(map[string]any{"pattern": "foo"})},
 	}, []ToolResultContent{})
 
-	if b.Remaining() != 8 {
-		t.Errorf("expected 8 remaining, got %d", b.Remaining())
+	if b.Remaining() != 9 {
+		t.Errorf("expected 9 remaining, got %d", b.Remaining())
 	}
 
 	// Successful mutating tool resets budget
@@ -108,6 +130,9 @@ func TestExplorationBudget_ExhaustionNudge(t *testing.T) {
 		}
 		if i == 2 && nudge == "" {
 			t.Errorf("expected exhaustion nudge at iteration %d", i)
+		}
+		if i == 2 && !strings.Contains(nudge, "next tool call MUST be edit_file") {
+			t.Errorf("expected stronger edit_file nudge, got %q", nudge)
 		}
 	}
 

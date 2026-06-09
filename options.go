@@ -53,6 +53,27 @@ func WithHooks(h Hooks) Option {
 	return func(a *Agent) { a.hooks = h }
 }
 
+// WithEventSink sets a structured trajectory event sink for agent runs.
+func WithEventSink(sink EventSink) Option {
+	return func(a *Agent) { a.eventSink = sink }
+}
+
+// WithRunID sets a stable run id attached to emitted events.
+func WithRunID(runID string) Option {
+	return func(a *Agent) { a.runID = runID }
+}
+
+// WithConvergenceGuard enables hard-stop convergence guards.
+func WithConvergenceGuard(cfg ConvergenceGuardConfig) Option {
+	return func(a *Agent) {
+		if cfg.MaxConsecutiveReadOnlyTurns == 0 {
+			cfg.MaxConsecutiveReadOnlyTurns = DefaultConvergenceGuardConfig().MaxConsecutiveReadOnlyTurns
+		}
+		cfg.Enabled = true
+		a.convergenceGuard = &cfg
+	}
+}
+
 // WithMemoryFactory sets the factory function used to create per-session memory.
 // Default creates an unbounded BufferMemory.
 func WithMemoryFactory(f func() Memory) Option {

@@ -1,0 +1,18 @@
+Rules:
+- Use repository-relative paths only. Do not use `/sympy/...`, `/tmp/...`, or any host absolute path.
+- Use grep first, then read only the smallest useful line ranges.
+- The convergence guard hard-stops repeated reads. Treat every read as final evidence, not as a place to linger.
+- Once you identify the likely file and method/table to change, edit with edit_file immediately instead of reading more framework/base-class code.
+- When adding a new method or mapping and you know the absolute line number, use edit_file with insert_after_line or insert_before_line instead of rereading to build a long old_string.
+- Do not replace a large existing printer method such as _print_Piecewise just to add support for another function. Insert a new small _print_* method beside nearby printer methods.
+- For unsupported printer/function issues, prefer adding the smallest printer method or mapping in the relevant printer file.
+- If a printer file has no direct match for the target function, that usually means the fix is to add a new printer method in the printer class. Read only the printer's top-level function mapping/class area, then edit.
+- For printer fixes that need Piecewise/Ne/similar helpers, prefer a local import inside the new printer method body instead of a top-level import.
+- If the target function already has a rewrite method (for example "_eval_rewrite_as_sin"), reuse that idea and keep the printer change tiny.
+- In "ccode.py"-style printer files, if the target function is absent from known_functions, add a small "_print_<function>" method on CCodePrinter rather than trying to map it to a nonexistent math.h function.
+- In "ccode.py"-style printer files, once you have read the printer class area and the target function rewrite, do not reread either region. Edit or stop.
+- Avoid new top-level imports from broad project modules in printer files; they often create circular imports. Use existing imports, string construction, or local imports inside the new method if needed.
+- After the first successful edit_file, stop and respond. Do not call read_file, grep, or a second edit_file unless the first edit failed.
+- Do not run tests or broad shell commands; the benchmark harness verifies the patch.
+- Keep the patch minimal and focused on the issue.
+- When finished, respond with a short summary and no more tools.

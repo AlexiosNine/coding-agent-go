@@ -1,5 +1,131 @@
 # goagent 阶段性总结
 
+## 2026-06-08 轨迹收敛与能力评估落盘
+
+### 本轮已完成
+
+1. **核心 agent 轨迹事件**
+   - 新增 `AgentEvent` / `EventSink` / `WithEventSink(...)`，覆盖 `run_started`、`model_response`、`tool_call_started`、`tool_call_finished`、`guard_triggered`、`run_finished`。
+   - `RunResult` 增加 `StopReason`、`GuardReason`、`RunMetrics`，用于区分 `success_text`、`max_turns`、`stopped_by_guard`、`provider_error` 等结束原因。
+
+2. **硬停止收敛 guard**
+   - SWE-bench 默认启用 `DefaultConvergenceGuardConfig()`。
+   - 当前会阻断：连续 read-only 工具调用、重复读取同一文件区域、成功 `edit_file` 后继续 read-only、exploration budget 已耗尽后继续读取。
+   - guard 触发时会写 `guard_triggered` 事件，并以 `stopped_by_guard` 结束 run。
+
+3. **SWE-bench 评估产物**
+   - `swebench/run_case_collect.sh` 会把单 case 产物集中保存到 `swebench/runs/<timestamp>_<instance_id>/`。
+   - 关键产物包括：`events.jsonl`、`metrics.json`、`summary.md`、`runner_status.jsonl`、`adapter.log`、`runner.stdout.log`、`runner.stderr.log`、`prediction.jsonl`、`prediction_patch.diff`、`repo.diff`、`repo_status.txt`、`env_summary.txt`。
+   - `metrics.json` 是 source of truth；验证失败会覆盖 runner 的“已生成 patch”成功判定，避免把 verification failure 计为能力成功。
+
+### 后续优化方向
+
+1. **多 case 聚合分析**
+   - 增加一个本地汇总脚本，扫描 `swebench/runs/*/metrics.json` 和 `runner_status.jsonl`，输出按 model/toolset/case 分组的成功率、guard 触发率、平均 turns、平均 patch size。
+   - 评测指标与 LLM-as-judge 的边界见 `docs/agent-evaluation-and-llm-judge.md`。
+
+2. **guard 阈值自适应**
+   - 对 `sympy__sympy-11400`、`django__django-11179`、`pytest-dev__pytest-11143` 分别记录当前阈值下的失败类型，再决定是否按 repo/test family 设置不同的 read-only 和 budget 阈值。
+
+3. **verification 泛化**
+   - 继续把 `verify_patch.sh` 从单 case 经验扩展为 repo-aware verifier，让 `verify_status=failed` 能带更具体的失败分类，例如 import error、unit failure、timeout、setup error。
+
+## 2026-06-01 SWE-bench 小样本优化进度
+
+### 当前目标
+
+本轮目标已经收敛为：先用 2-3 个 SWE-bench Lite case 做可重复的小样本优化，而不是一次性覆盖全部 benchmark。当前选定 case：
+
+- `django__django-11179`
+- `sympy__sympy-11400`
+- `pytest-dev__pytest-11143`
+
+这 3 个 case 已固化为本地 golden suite：`swebench/suites/golden_cases.txt`，可通过 `swebench/run_suite_collect.sh` 执行。
+
+优化重点是减少无效探索、降低 token 消耗，并确保 agent 只能在准备好的本地 workspace 中操作。
+
+### 已完成进展
+
+1. **SWE-bench workspace 本地化与隔离**
+   - Adapter 默认 workspace 从 `/tmp` 改为项目内 `swebench/workspace/<instance_id>`。
+   - 可通过 `SWE_WORKSPACE_ROOT` 覆盖 workspace 根目录。
+   - 每个 case 会 checkout 到 `base_commit`，并执行 `git reset --hard <base_commit>` 与 `git clean -fd`，保证 case 运行前状态干净。
+   - Adapter 会 `chdir` 到当前 case repo，使模型只能围绕当前 checkout 后的仓库使用相对路径。
+   - Agent 使用 `WithStrictSandbox(workDir)`，限制工具读写范围在当前 case workspace 内。
+
+2. **工具集收敛**
+   - 默认 `SWE_TOOLSET=lean`，只暴露 `grep`、`read_file`、`edit_file`。
+   - `SWE_TOOLSET=full` 提供 `read_file`、`write_file`、`edit_file`、`list_files`、`grep`。
+   - 两种工具集都不暴露 `shell`，避免 benchmark 过程中越过 workspace 边界执行任意命令。
+
+3. **Token 与 turn 参数可配置**
+   - `SWE_MAX_TOKENS` 默认 `4096`
+   - `SWE_CONTEXT_WINDOW` 默认 `12000`
+   - `SWE_RECENT_WINDOW` 默认 `4`
+   - `SWE_TOOL_OUTPUT_CHARS` 默认 `5000`
+   - `SWE_TOOL_SUMMARY_CHARS` 默认 `1000`
+   - `SWE_EXPLORATION_BUDGET` 默认 `10`
+   - `SWE_MAX_TURNS` 默认 `18`
+   - `TURN_DELAY` 默认 `15s`
+
+4. **Runner 支持固定 case 选择**
+   - 新增 `--instances` 参数，可显式指定小样本 case 列表。
+   - 默认随机样本数量从 5 收敛为 3。
+   - 修复 runner 调 adapter 的路径：优先使用已构建的 `adapter` 二进制，不存在时 fallback 到 `go run .`。
+
+5. **验证与测试**
+   - 新增 adapter/runner 单元测试，覆盖 lean/full 工具集、workspace root、instance 选择等行为。
+   - 已通过：
+     - `GOCACHE=/private/tmp/goagent-gocache go test -count=1 ./...`
+     - `GOCACHE=/private/tmp/goagent-gocache go test -count=1 .`（`swebench/adapter`）
+     - `GOCACHE=/private/tmp/goagent-gocache go test -count=1 .`（`swebench/runner`）
+   - 已验证当前 OpenAI-compatible 配置支持 native tool calling。
+
+### 环境配置获取方式
+
+生产/实验运行仍优先使用标准环境变量：
+
+```bash
+export OPENAI_API_KEY="<secret_key>"
+export OPENAI_BASE_URL="<base_url>"
+export LLM_MODEL="xopkimik25"
+```
+
+当前仓库的 e2e 测试文件中存在一份本地 fallback 配置，可用于本地复现实验。不要把 key 值写入日志或文档，可用以下方式在 shell 中提取并仅注入子进程环境：
+
+```bash
+KEY=$(perl -ne 'print "$1\n" if /apiKey = "([^"]+)"/' e2e_test.go | head -1)
+BASE=$(perl -ne 'print "$1\n" if /baseURL = "([^"]+)"/' e2e_test.go | head -1)
+
+OPENAI_API_KEY="$KEY" OPENAI_BASE_URL="$BASE" LLM_MODEL=xopkimik25 \
+  GOCACHE=/private/tmp/goagent-gocache \
+  go test -tags e2e -run TestE2E_ToolCalling -count=1 -v .
+```
+
+已知 fallback `base_url` 为 `https://maas-api.cn-huabei-1.xf-yun.com/v2`；`secret_key` 从 `e2e_test.go` 或 `subagent_e2e_test.go` 中提取，不应明文复制到其他文档。
+
+### 后续优化方向
+
+1. **小样本实验闭环**
+   - 对固定 3 个 case 跑 `lean` 配置，记录成功率、turn 数、patch size、日志中的工具调用次数。
+   - 再用同样 case 对比 `full` 工具集，确认 `list_files/write_file` 是否真正提升成功率。
+
+2. **指标解析器**
+   - 从 `swebench/workspace/logs/*.log` 和 runner 输出中自动汇总：turn 数、工具调用次数、exploration budget 触发次数、patch 字节数、是否生成 prediction。
+   - 后续可以把每轮参数和指标写成 JSONL，方便比较。
+
+3. **验证脚本泛化**
+   - 当前 `swebench/verify_patch.sh` 仍偏向单 case/单仓库验证。
+   - 后续应抽象为 per-repo/per-instance verifier，按 Django/SymPy/Pytest 的实际测试命令选择最小验证集。
+
+4. **repo 缓存与 clone 加速**
+   - 增加本地 bare mirror/cache，避免每次 workspace 缺失时都从 GitHub clone。
+   - workspace 只从本地 cache checkout，可减少网络波动对实验的影响。
+
+5. **读文件精度优化**
+   - 给 `read_file` 输出增加稳定行号或 compact context window，减少 edit_file 定位失败。
+   - 结合 grep 结果自动建议最小读取范围，继续压缩无效 token。
+
 **日期**: 2026-04-16  
 **版本**: fe67bbb
 

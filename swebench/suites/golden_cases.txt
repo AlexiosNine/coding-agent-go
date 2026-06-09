@@ -1,0 +1,7 @@
+# Local SWE-bench golden/sanity suite for goagent.
+#
+# Keep this set small. Its purpose is regression and trajectory debugging, not
+# full benchmark scoring.
+sympy__sympy-11400
+django__django-11179
+pytest-dev__pytest-11143

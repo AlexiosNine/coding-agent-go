@@ -47,7 +47,7 @@ func NewFuncTool[T any](name, desc string, fn func(ctx context.Context, input T)
 	return &FuncTool[T]{name: name, desc: desc, fn: fn, schema: schema}
 }
 
-func (t *FuncTool[T]) Name() string                { return t.name }
+func (t *FuncTool[T]) Name() string                 { return t.name }
 func (t *FuncTool[T]) Description() string          { return t.desc }
 func (t *FuncTool[T]) InputSchema() json.RawMessage { return t.schema }
 
@@ -77,13 +77,12 @@ func generateSchema[T any]() json.RawMessage {
 				continue
 			}
 
-			name := field.Tag.Get("json")
-			if name == "" || name == "-" {
-				name = strings.ToLower(field.Name)
+			name, omitempty := parseJSONTag(field.Tag.Get("json"))
+			if name == "-" {
+				continue
 			}
-			// Strip json tag options like ",omitempty"
-			if idx := strings.Index(name, ","); idx != -1 {
-				name = name[:idx]
+			if name == "" {
+				name = strings.ToLower(field.Name)
 			}
 
 			prop := map[string]string{
@@ -93,7 +92,9 @@ func generateSchema[T any]() json.RawMessage {
 				prop["description"] = desc
 			}
 			properties[name] = prop
-			required = append(required, name)
+			if !omitempty && field.Type.Kind() != reflect.Ptr {
+				required = append(required, name)
+			}
 		}
 	}
 
@@ -109,7 +110,21 @@ func generateSchema[T any]() json.RawMessage {
 	return data
 }
 
+func parseJSONTag(tag string) (string, bool) {
+	name, options, _ := strings.Cut(tag, ",")
+	for _, option := range strings.Split(options, ",") {
+		if option == "omitempty" {
+			return name, true
+		}
+	}
+	return name, false
+}
+
 func goTypeToJSONType(t reflect.Type) string {
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+
 	switch t.Kind() {
 	case reflect.String:
 		return "string"

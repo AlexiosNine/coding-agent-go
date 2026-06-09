@@ -1,0 +1,1 @@
+- read_file: request narrow absolute line ranges and treat the returned File/Lines metadata as the source of truth for edit positioning.

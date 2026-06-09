@@ -146,9 +146,14 @@ go run ./cmd/agent -provider openai -approval interactive -stream -max-turns 20
 
 ## SWE-bench Evaluation
 
+See `docs/agent-evaluation-and-llm-judge.md` for the recommended local evaluation layers, required metrics, and LLM-as-judge rubric.
+
 Adapter for testing goagent on real GitHub issue fixing tasks.
 
 ```bash
+# Golden 3-case suite
+./swebench/run_suite_collect.sh --max-turns 18 --budget 12 --toolset lean --turn-delay 0
+
 # Run on a single instance
 cd swebench/adapter
 OPENAI_API_KEY=... OPENAI_BASE_URL=... LLM_MODEL=xopglm5 \

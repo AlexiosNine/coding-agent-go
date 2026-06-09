@@ -10,31 +10,43 @@ import (
 )
 
 type editFileInput struct {
-	Path      string `json:"path" desc:"The file path to edit"`
-	OldString string `json:"old_string" desc:"The exact string to find and replace (must be unique in the file)"`
-	NewString string `json:"new_string" desc:"The replacement string"`
+	Path             string `json:"path" desc:"The file path to edit"`
+	OldString        string `json:"old_string,omitempty" desc:"The exact string to find and replace (must be unique in the file). Optional when insert_after_line or insert_before_line is used."`
+	NewString        string `json:"new_string" desc:"The replacement string or inserted text"`
+	InsertAfterLine  int    `json:"insert_after_line,omitempty" desc:"Optional: insert new_string after this 1-indexed line number instead of replacing old_string"`
+	InsertBeforeLine int    `json:"insert_before_line,omitempty" desc:"Optional: insert new_string before this 1-indexed line number instead of replacing old_string"`
 }
 
-// EditFile returns a tool that performs targeted string replacement in a file.
+// EditFile returns a tool that performs targeted string replacement or line insertion.
 // This is much more efficient than rewriting entire files.
 func EditFile() cc.Tool {
 	return cc.NewFuncTool(
 		"edit_file",
-		"Replace a specific string in a file. Provide the exact old_string to find and new_string to replace it with. The old_string must be unique in the file.",
+		"Edit a file by replacing an exact old_string with new_string, or by inserting new_string with insert_after_line/insert_before_line when you know the target line. For adding new methods or mappings, prefer line insertion over replacing a large existing method.",
 		func(ctx context.Context, input editFileInput) (string, error) {
 			if input.Path == "" {
 				return "", fmt.Errorf("path is required")
 			}
-			if input.OldString == "" {
-				return "", fmt.Errorf("old_string is required")
-			}
-
 			data, err := os.ReadFile(input.Path)
 			if err != nil {
 				return "", fmt.Errorf("read file %s: %w", input.Path, err)
 			}
 
 			content := string(data)
+			if input.InsertAfterLine > 0 || input.InsertBeforeLine > 0 {
+				newContent, err := insertAtLine(content, input.NewString, input.InsertAfterLine, input.InsertBeforeLine)
+				if err != nil {
+					return "", err
+				}
+				if err := os.WriteFile(input.Path, []byte(newContent), 0644); err != nil {
+					return "", fmt.Errorf("write file %s: %w", input.Path, err)
+				}
+				return fmt.Sprintf("Inserted in %s (%d bytes → %d bytes). No need to re-read the file to verify.", input.Path, len(content), len(newContent)), nil
+			}
+			if input.OldString == "" {
+				return "", fmt.Errorf("old_string is required unless insert_after_line or insert_before_line is used")
+			}
+
 			count := strings.Count(content, input.OldString)
 
 			if count == 0 {
@@ -63,6 +75,49 @@ func EditFile() cc.Tool {
 			return fmt.Sprintf("Replaced in %s (%d bytes → %d bytes). No need to re-read the file to verify.", input.Path, len(content), len(newContent)), nil
 		},
 	)
+}
+
+func insertAtLine(content, insert string, afterLine, beforeLine int) (string, error) {
+	if afterLine > 0 && beforeLine > 0 {
+		return "", fmt.Errorf("use only one of insert_after_line or insert_before_line")
+	}
+	if insert == "" {
+		return "", fmt.Errorf("new_string is required")
+	}
+	if !strings.HasSuffix(insert, "\n") {
+		insert += "\n"
+	}
+
+	lines := strings.SplitAfter(content, "\n")
+	lineCount := len(strings.Split(content, "\n"))
+	idx := -1
+	switch {
+	case afterLine > 0:
+		if afterLine > lineCount {
+			return "", fmt.Errorf("insert_after_line %d exceeds file length %d", afterLine, lineCount)
+		}
+		idx = afterLine
+	case beforeLine > 0:
+		if beforeLine > lineCount {
+			return "", fmt.Errorf("insert_before_line %d exceeds file length %d", beforeLine, lineCount)
+		}
+		idx = beforeLine - 1
+	default:
+		return "", fmt.Errorf("insert_after_line or insert_before_line is required")
+	}
+	if idx < 0 || idx > len(lines) {
+		return "", fmt.Errorf("invalid insertion line")
+	}
+
+	var b strings.Builder
+	for _, line := range lines[:idx] {
+		b.WriteString(line)
+	}
+	b.WriteString(insert)
+	for _, line := range lines[idx:] {
+		b.WriteString(line)
+	}
+	return b.String(), nil
 }
 
 // normalizeWhitespace collapses runs of spaces/tabs to a single space
@@ -210,7 +265,7 @@ func findSimilarContent(content, oldString string) string {
 		hint.WriteString(fmt.Sprintf("%s%4d: %s\n", marker, i+1, lines[i]))
 	}
 
-	hint.WriteString("\nTip: Use read_file to get the exact content, then copy-paste as old_string.")
+	hint.WriteString("\nTip: Use read_file to get the exact content, then copy-paste as old_string. If you are adding a new method or mapping and already know the line number, use insert_after_line or insert_before_line instead of replacing a large block.")
 
 	return hint.String()
 }

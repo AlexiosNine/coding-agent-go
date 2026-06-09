@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -9,6 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 )
 
 type Instance struct {
@@ -25,9 +28,26 @@ type Prediction struct {
 	ModelPatch      string `json:"model_patch"`
 }
 
+type CaseStatus struct {
+	InstanceID          string `json:"instance_id"`
+	GeneratedPrediction bool   `json:"generated_prediction"`
+	HasPatch            bool   `json:"has_patch"`
+	VerifyStatus        string `json:"verify_status"`
+	RunResult           string `json:"run_result"`
+	StopReason          string `json:"stop_reason"`
+	ErrorMessage        string `json:"error_message,omitempty"`
+}
+
+type caseMetrics struct {
+	RunResult    string `json:"run_result"`
+	StopReason   string `json:"stop_reason"`
+	VerifyStatus string `json:"verify_status"`
+}
+
 func main() {
 	datasetPath := flag.String("dataset", "", "Path to SWE-bench dataset directory")
-	numSamples := flag.Int("n", 5, "Number of random samples to test")
+	numSamples := flag.Int("n", 3, "Number of random samples to test when --instances is empty")
+	instanceIDs := flag.String("instances", "", "Comma-separated instance IDs to run instead of random sampling")
 	outputPath := flag.String("output", "predictions.jsonl", "Output JSONL file")
 	flag.Parse()
 
@@ -46,9 +66,16 @@ func main() {
 
 	fmt.Printf("Loaded %d instances from dataset\n", len(instances))
 
-	// Random sample
-	samples := randomSample(instances, *numSamples)
-	fmt.Printf("Selected %d random samples\n", len(samples))
+	samples, err := selectInstances(instances, *instanceIDs, *numSamples)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error selecting instances: %v\n", err)
+		os.Exit(1)
+	}
+	if strings.TrimSpace(*instanceIDs) == "" {
+		fmt.Printf("Selected %d random samples\n", len(samples))
+	} else {
+		fmt.Printf("Selected %d requested instances\n", len(samples))
+	}
 
 	// Open output file
 	outFile, err := os.Create(*outputPath)
@@ -61,6 +88,7 @@ func main() {
 	// Process each sample
 	successCount := 0
 	for i, instance := range samples {
+		status := CaseStatus{InstanceID: instance.InstanceID, RunResult: "command_failed"}
 		fmt.Printf("\n[%d/%d] Processing %s...\n", i+1, len(samples), instance.InstanceID)
 		fmt.Printf("  Repo: %s\n", instance.Repo)
 		fmt.Printf("  Problem: %s\n", truncate(instance.ProblemStatement, 100))
@@ -70,34 +98,69 @@ func main() {
 		instanceData, _ := json.Marshal(instance)
 		if err := os.WriteFile(tmpFile, instanceData, 0644); err != nil {
 			fmt.Printf("  ERROR: Failed to write temp file: %v\n", err)
+			status.ErrorMessage = err.Error()
+			writeRunnerStatus(status)
 			continue
 		}
 
-		// Run adapter
-		cmd := exec.Command("go", "run", "adapter.go", tmpFile)
-		cmd.Dir = filepath.Dir(os.Args[0])
-		output, err := cmd.CombinedOutput()
+		// Run adapter. The adapter writes progress logs to stderr and the final
+		// prediction JSON to stdout, so keep the streams separate.
+		cmd := adapterCommand(tmpFile)
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		err := cmd.Run()
 
 		if err != nil {
 			fmt.Printf("  ERROR: Adapter failed: %v\n", err)
-			fmt.Printf("  Output: %s\n", string(output))
+			status.ErrorMessage = err.Error()
+			if stderr.Len() > 0 {
+				fmt.Printf("  Stderr: %s\n", stderr.String())
+			}
+			if stdout.Len() > 0 {
+				fmt.Printf("  Stdout: %s\n", stdout.String())
+			}
+			if metrics, ok := loadCaseMetrics(); ok {
+				applyMetricsToStatus(&status, metrics)
+			}
+			writeRunnerStatus(status)
 			continue
 		}
 
 		// Parse prediction
 		var pred Prediction
-		if err := json.Unmarshal(output, &pred); err != nil {
+		if err := json.Unmarshal(lastNonEmptyLine(stdout.Bytes()), &pred); err != nil {
 			fmt.Printf("  ERROR: Failed to parse prediction: %v\n", err)
-			fmt.Printf("  Output: %s\n", string(output))
+			status.RunResult = "case_failed"
+			status.ErrorMessage = err.Error()
+			if stderr.Len() > 0 {
+				fmt.Printf("  Stderr: %s\n", stderr.String())
+			}
+			fmt.Printf("  Stdout: %s\n", stdout.String())
+			if metrics, ok := loadCaseMetrics(); ok {
+				applyMetricsToStatus(&status, metrics)
+			}
+			writeRunnerStatus(status)
 			continue
+		}
+		status.GeneratedPrediction = true
+		status.HasPatch = pred.ModelPatch != ""
+		status.RunResult = "case_success"
+		if metrics, ok := loadCaseMetrics(); ok {
+			applyMetricsToStatus(&status, metrics)
 		}
 
 		// Write to output file
 		predJSON, _ := json.Marshal(pred)
 		fmt.Fprintf(outFile, "%s\n", predJSON)
 
-		fmt.Printf("  SUCCESS: Generated patch (%d bytes)\n", len(pred.ModelPatch))
-		successCount++
+		if status.RunResult == "case_success" {
+			fmt.Printf("  SUCCESS: Generated passing patch (%d bytes)\n", len(pred.ModelPatch))
+			successCount++
+		} else {
+			fmt.Printf("  RESULT: Generated patch (%d bytes), run_result=%s verify=%s\n", len(pred.ModelPatch), status.RunResult, status.VerifyStatus)
+		}
+		writeRunnerStatus(status)
 
 		// Cleanup
 		os.Remove(tmpFile)
@@ -108,6 +171,94 @@ func main() {
 	fmt.Printf("Successful: %d\n", successCount)
 	fmt.Printf("Failed: %d\n", len(samples)-successCount)
 	fmt.Printf("Output written to: %s\n", *outputPath)
+}
+
+func loadCaseMetrics() (caseMetrics, bool) {
+	runDir := os.Getenv("SWE_RUN_DIR")
+	if runDir == "" {
+		return caseMetrics{}, false
+	}
+	data, err := os.ReadFile(filepath.Join(runDir, "metrics.json"))
+	if err != nil {
+		return caseMetrics{}, false
+	}
+	var metrics caseMetrics
+	if err := json.Unmarshal(data, &metrics); err != nil {
+		return caseMetrics{}, false
+	}
+	return metrics, true
+}
+
+func applyMetricsToStatus(status *CaseStatus, metrics caseMetrics) {
+	if metrics.RunResult != "" {
+		status.RunResult = metrics.RunResult
+	}
+	status.StopReason = metrics.StopReason
+	status.VerifyStatus = metrics.VerifyStatus
+}
+
+func writeRunnerStatus(status CaseStatus) {
+	runDir := os.Getenv("SWE_RUN_DIR")
+	if runDir == "" {
+		return
+	}
+	data, err := json.Marshal(status)
+	if err != nil {
+		return
+	}
+	f, err := os.OpenFile(filepath.Join(runDir, "runner_status.jsonl"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.Write(append(data, '\n'))
+}
+
+func selectInstances(instances []Instance, ids string, n int) ([]Instance, error) {
+	if strings.TrimSpace(ids) == "" {
+		return randomSample(instances, n), nil
+	}
+
+	byID := make(map[string]Instance, len(instances))
+	for _, inst := range instances {
+		byID[inst.InstanceID] = inst
+	}
+
+	var selected []Instance
+	for _, id := range strings.Split(ids, ",") {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		inst, ok := byID[id]
+		if !ok {
+			return nil, fmt.Errorf("instance %q not found", id)
+		}
+		selected = append(selected, inst)
+	}
+	if len(selected) == 0 {
+		return nil, fmt.Errorf("--instances did not contain any instance IDs")
+	}
+	return selected, nil
+}
+
+func adapterCommand(instanceFile string) *exec.Cmd {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		return exec.Command("go", "run", "../adapter", instanceFile)
+	}
+
+	adapterDir := filepath.Join(filepath.Dir(file), "..", "adapter")
+	bin := filepath.Join(adapterDir, "adapter")
+	if info, err := os.Stat(bin); err == nil && !info.IsDir() && info.Mode()&0111 != 0 {
+		cmd := exec.Command(bin, instanceFile)
+		cmd.Dir = adapterDir
+		return cmd
+	}
+
+	cmd := exec.Command("go", "run", ".", instanceFile)
+	cmd.Dir = adapterDir
+	return cmd
 }
 
 func loadDataset(path string) ([]Instance, error) {
@@ -185,4 +336,15 @@ func splitLines(s string) []string {
 		lines = append(lines, s[start:])
 	}
 	return lines
+}
+
+func lastNonEmptyLine(data []byte) []byte {
+	lines := bytes.Split(data, []byte("\n"))
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := bytes.TrimSpace(lines[i])
+		if len(line) > 0 {
+			return line
+		}
+	}
+	return nil
 }

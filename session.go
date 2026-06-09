@@ -25,11 +25,130 @@ type Session struct {
 	summarizer        *ToolResultSummarizer
 	factCache         *SessionFactCache
 	skillRegistry     *SkillRegistry
-	skillTool         Tool     // use_skill tool instance
-	activeSkills      []string // session-local active skill names
+	skillTool         Tool         // use_skill tool instance
+	activeSkills      []string     // session-local active skill names
 	activeSkillsMu    sync.RWMutex // protects activeSkills
-	maxActiveSkills   int      // max concurrent active skills (default 3)
-	systemSuffix      string   // appended to agent.system on every LLM call; survives compression
+	maxActiveSkills   int          // max concurrent active skills (default 3)
+	systemSuffix      string       // appended to agent.system on every LLM call; survives compression
+	runID             string
+	metrics           RunMetrics
+	guardTracker      *ReadTracker
+	readOnlyTurns     int
+	editSucceeded     bool
+	currentTurn       int
+}
+
+func (s *Session) emitEvent(ctx context.Context, event AgentEvent) {
+	if s.agent.eventSink == nil {
+		return
+	}
+	event.TS = time.Now()
+	event.RunID = s.runID
+	s.agent.eventSink.EmitAgentEvent(ctx, event)
+}
+
+func (s *Session) finishRun(ctx context.Context, result *RunResult, stopReason string) *RunResult {
+	result.StopReason = stopReason
+	result.GuardReason = s.metrics.GuardReason
+	result.Metrics = s.metrics
+	s.emitEvent(ctx, AgentEvent{
+		Event:       EventRunFinished,
+		Turn:        result.Turns,
+		StopReason:  stopReason,
+		GuardReason: result.GuardReason,
+		Usage:       result.Usage,
+	})
+	return result
+}
+
+func (s *Session) recordToolUses(toolUses []ToolUseContent) {
+	for _, tu := range toolUses {
+		s.metrics.ToolCallCount++
+		switch tu.Name {
+		case "grep":
+			s.metrics.GrepCalls++
+		case "read_file":
+			s.metrics.ReadFileCalls++
+		case "edit_file":
+			s.metrics.EditFileCalls++
+		}
+		if isReadOnlyToolUse(tu) {
+			s.metrics.ReadOnlyCount++
+		}
+		if isMutatingToolUse(tu) {
+			s.metrics.MutationCount++
+		}
+	}
+}
+
+func (s *Session) guardBeforeTools(toolUses []ToolUseContent) string {
+	cfg := s.agent.convergenceGuard
+	if cfg == nil || !cfg.Enabled {
+		return ""
+	}
+	hasReadOnly := false
+	allReadOnly := len(toolUses) > 0
+	for _, tu := range toolUses {
+		if isReadOnlyToolUse(tu) {
+			hasReadOnly = true
+		} else {
+			allReadOnly = false
+		}
+	}
+	if cfg.StopReadOnlyAfterEdit && s.editSucceeded && hasReadOnly {
+		s.metrics.ReadOnlyAfterEditBlocks++
+		return "read_only_after_successful_edit"
+	}
+	if cfg.StopOnBudgetExhausted && s.explorationBudget != nil && s.explorationBudget.ActiveNudge() != "" && hasReadOnly {
+		return "exploration_budget_exhausted"
+	}
+	if cfg.MaxConsecutiveReadOnlyTurns > 0 && allReadOnly && s.readOnlyTurns+1 >= cfg.MaxConsecutiveReadOnlyTurns {
+		return fmt.Sprintf("max_consecutive_read_only_turns:%d", cfg.MaxConsecutiveReadOnlyTurns)
+	}
+	if cfg.StopOnRepeatedRead && s.guardTracker != nil {
+		if nudge := s.guardTracker.Track(toolUses); nudge != "" {
+			return "repeated_read"
+		}
+	}
+	return ""
+}
+
+func (s *Session) noteToolResults(toolUses []ToolUseContent, results []ToolResultContent) {
+	successfulMutation := false
+	for i, tu := range toolUses {
+		if isMutatingToolUse(tu) && i < len(results) && !results[i].IsError {
+			successfulMutation = true
+			if s.metrics.FirstEditTurn == 0 && tu.Name == "edit_file" {
+				s.metrics.FirstEditTurn = s.currentTurn
+			}
+		}
+	}
+	if successfulMutation {
+		s.editSucceeded = true
+		s.readOnlyTurns = 0
+		return
+	}
+	allReadOnly := len(toolUses) > 0
+	for _, tu := range toolUses {
+		if !isReadOnlyToolUse(tu) {
+			allReadOnly = false
+			break
+		}
+	}
+	if allReadOnly {
+		s.readOnlyTurns++
+	} else {
+		s.readOnlyTurns = 0
+	}
+}
+
+func isReadOnlyToolUse(tu ToolUseContent) bool {
+	switch tu.Name {
+	case "grep", "read_file", "list_files":
+		return true
+	default:
+		return false
+	}
 }
 
 // Run executes the agent loop within this session's conversation context.
@@ -42,6 +161,7 @@ func (s *Session) Run(ctx context.Context, input string) (*RunResult, error) {
 	}
 
 	s.memory.Add(NewUserMessage(input))
+	s.emitEvent(ctx, AgentEvent{Event: EventRunStarted})
 
 	// Track this session as parent for sub-agents
 	ctx = withParentSession(ctx, s)
@@ -59,7 +179,13 @@ func (s *Session) Run(ctx context.Context, input string) (*RunResult, error) {
 
 		resp, err := s.step(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("turn %d: %w", turn+1, err)
+			result := &RunResult{
+				Output:   fmt.Sprintf("Provider error: %v", err),
+				Messages: s.memory.Messages(),
+				Turns:    turn + 1,
+				Usage:    totalUsage,
+			}
+			return s.finishRun(ctx, result, StopReasonProviderError), fmt.Errorf("turn %d: %w", turn+1, err)
 		}
 
 		totalUsage = totalUsage.Add(resp.Usage)
@@ -67,6 +193,12 @@ func (s *Session) Run(ctx context.Context, input string) (*RunResult, error) {
 		if s.agent.hooks.OnModelResponse != nil {
 			s.agent.hooks.OnModelResponse(ctx, resp)
 		}
+		s.emitEvent(ctx, AgentEvent{
+			Event:      EventModelResponse,
+			Turn:       turn + 1,
+			StopReason: resp.StopReason,
+			Usage:      resp.Usage,
+		})
 
 		s.memory.Add(Message{Role: RoleAssistant, Content: resp.Content})
 
@@ -74,12 +206,13 @@ func (s *Session) Run(ctx context.Context, input string) (*RunResult, error) {
 		if resp.StopReason == "max_tokens" {
 			continuationCount++
 			if continuationCount > maxContinuations {
-				return &RunResult{
+				result := &RunResult{
 					Output:   fmt.Sprintf("Max continuations (%d) exceeded - response may be incomplete", maxContinuations),
 					Messages: s.memory.Messages(),
 					Turns:    turn + 1,
 					Usage:    totalUsage,
-				}, fmt.Errorf("exceeded max continuations (%d)", maxContinuations)
+				}
+				return s.finishRun(ctx, result, StopReasonMaxTurns), fmt.Errorf("exceeded max continuations (%d)", maxContinuations)
 			}
 			s.memory.Add(NewUserMessage("[continue]"))
 			continue // Don't count this as a turn
@@ -96,12 +229,34 @@ func (s *Session) Run(ctx context.Context, input string) (*RunResult, error) {
 					continue // next turn will see skill instructions in system prompt
 				}
 			}
-			return &RunResult{
+			result := &RunResult{
 				Output:   resp.Text(),
 				Messages: s.memory.Messages(),
 				Turns:    turn + 1,
 				Usage:    totalUsage,
-			}, nil
+			}
+			return s.finishRun(ctx, result, StopReasonSuccessText), nil
+		}
+
+		s.currentTurn = turn + 1
+		s.recordToolUses(toolUses)
+		if reason := s.guardBeforeTools(toolUses); reason != "" {
+			s.metrics.GuardTriggers++
+			s.metrics.GuardReason = reason
+			s.emitEvent(ctx, AgentEvent{
+				Event:        EventGuardTriggered,
+				Turn:         turn + 1,
+				Tool:         toolUseNames(toolUses),
+				InputPreview: previewToolUses(toolUses, 240),
+				GuardReason:  reason,
+			})
+			result := &RunResult{
+				Output:   "Stopped by convergence guard: " + reason,
+				Messages: s.memory.Messages(),
+				Turns:    turn + 1,
+				Usage:    totalUsage,
+			}
+			return s.finishRun(ctx, result, StopReasonStoppedByGuard), nil
 		}
 
 		// Check if any mutating tools were called
@@ -129,7 +284,8 @@ func (s *Session) Run(ctx context.Context, input string) (*RunResult, error) {
 			}
 		}
 
-		results := s.executeTools(ctx, toolUses)
+		results := s.executeTools(ctx, toolUses, turn+1)
+		s.noteToolResults(toolUses, results)
 
 		// Update exploration budget (Consume before Add so compression sees correct state)
 		if s.explorationBudget != nil {
@@ -148,12 +304,22 @@ func (s *Session) Run(ctx context.Context, input string) (*RunResult, error) {
 
 			// If stuck in exploration mode for too long, abort
 			if s.agent.maxExplorationTurns > 0 && consecutiveExplorationTurns >= s.agent.maxExplorationTurns {
-				return &RunResult{
+				s.metrics.GuardTriggers++
+				s.metrics.GuardReason = fmt.Sprintf("legacy_max_exploration_turns:%d", s.agent.maxExplorationTurns)
+				s.emitEvent(ctx, AgentEvent{
+					Event:        EventGuardTriggered,
+					Turn:         turn + 1,
+					Tool:         toolUseNames(toolUses),
+					InputPreview: previewToolUses(toolUses, 240),
+					GuardReason:  s.metrics.GuardReason,
+				})
+				result := &RunResult{
 					Output:   fmt.Sprintf("Aborted: %d consecutive turns without making code changes (stuck in exploration mode)", consecutiveExplorationTurns),
 					Messages: s.memory.Messages(),
 					Turns:    turn + 1,
 					Usage:    totalUsage,
-				}, fmt.Errorf("stuck in exploration: %d turns without edit_file/write_file", consecutiveExplorationTurns)
+				}
+				return s.finishRun(ctx, result, StopReasonStoppedByGuard), fmt.Errorf("stuck in exploration: %d turns without edit_file/write_file", consecutiveExplorationTurns)
 			}
 
 			// Detect repeated reads and nudge model to take action
@@ -166,12 +332,13 @@ func (s *Session) Run(ctx context.Context, input string) (*RunResult, error) {
 		}
 	}
 
-	return &RunResult{
+	result := &RunResult{
 		Output:   "Max turns exceeded",
 		Messages: s.memory.Messages(),
 		Turns:    s.agent.maxTurns,
 		Usage:    totalUsage,
-	}, ErrMaxTurns
+	}
+	return s.finishRun(ctx, result, StopReasonMaxTurns), ErrMaxTurns
 }
 
 // step makes a single LLM call, with retry if configured.
@@ -240,8 +407,9 @@ func (s *Session) step(ctx context.Context) (*ChatResponse, error) {
 }
 
 // executeTools runs all tool calls concurrently.
-func (s *Session) executeTools(ctx context.Context, toolUses []ToolUseContent) []ToolResultContent {
+func (s *Session) executeTools(ctx context.Context, toolUses []ToolUseContent, turn int) []ToolResultContent {
 	results := make([]ToolResultContent, len(toolUses))
+	s.currentTurn = turn
 
 	g, ctx := errgroup.WithContext(ctx)
 	if s.agent.maxConcurrency > 0 {
@@ -260,13 +428,21 @@ func (s *Session) executeTools(ctx context.Context, toolUses []ToolUseContent) [
 
 // executeSingleTool runs a single tool call.
 func (s *Session) executeSingleTool(ctx context.Context, tu ToolUseContent) ToolResultContent {
+	s.emitEvent(ctx, AgentEvent{
+		Event:        EventToolCallStarted,
+		Turn:         s.currentTurn,
+		Tool:         tu.Name,
+		InputChars:   len(tu.Input),
+		InputPreview: previewJSON(tu.Input, 240),
+	})
+
 	tool, ok := s.agent.tools[tu.Name]
 	if !ok {
 		// Check session-level skill tool
 		if s.skillTool != nil && tu.Name == "use_skill" {
 			tool = s.skillTool
 		} else {
-			return ToolResultContent{ToolUseID: tu.ID, Content: fmt.Sprintf("tool %q not found", tu.Name), IsError: true}
+			return s.toolResult(ctx, tu, fmt.Sprintf("tool %q not found", tu.Name), true)
 		}
 	}
 
@@ -274,23 +450,23 @@ func (s *Session) executeSingleTool(ctx context.Context, tu ToolUseContent) Tool
 	if s.agent.approver != nil {
 		approved, err := s.agent.approver.Approve(ctx, tu.Name, tu.Input)
 		if err != nil {
-			return ToolResultContent{ToolUseID: tu.ID, Content: fmt.Sprintf("approval error: %s", err.Error()), IsError: true}
+			return s.toolResult(ctx, tu, fmt.Sprintf("approval error: %s", err.Error()), true)
 		}
 		if !approved {
-			return ToolResultContent{ToolUseID: tu.ID, Content: "tool call denied by user", IsError: true}
+			return s.toolResult(ctx, tu, "tool call denied by user", true)
 		}
 	}
 
 	// Sandbox check
 	if s.agent.sandbox != nil {
 		if err := s.agent.sandbox.CheckToolCall(tu.Name, tu.Input); err != nil {
-			return ToolResultContent{ToolUseID: tu.ID, Content: fmt.Sprintf("sandbox blocked: %s", err.Error()), IsError: true}
+			return s.toolResult(ctx, tu, fmt.Sprintf("sandbox blocked: %s", err.Error()), true)
 		}
 	}
 
 	if s.agent.hooks.BeforeToolCall != nil {
 		if err := s.agent.hooks.BeforeToolCall(ctx, tu.Name, tu.Input); err != nil {
-			return ToolResultContent{ToolUseID: tu.ID, Content: fmt.Sprintf("tool call blocked: %s", err.Error()), IsError: true}
+			return s.toolResult(ctx, tu, fmt.Sprintf("tool call blocked: %s", err.Error()), true)
 		}
 	}
 
@@ -312,11 +488,7 @@ func (s *Session) executeSingleTool(ctx context.Context, tu ToolUseContent) Tool
 
 	// Check for timeout before other error handling
 	if err != nil && ctx.Err() == context.DeadlineExceeded {
-		return ToolResultContent{
-			ToolUseID: tu.ID,
-			Content:   fmt.Sprintf("tool %q timed out after %v", tu.Name, s.agent.toolTimeout),
-			IsError:   true,
-		}
+		return s.toolResult(ctx, tu, fmt.Sprintf("tool %q timed out after %v", tu.Name, s.agent.toolTimeout), true)
 	}
 
 	// Apply output compression if configured
@@ -339,9 +511,60 @@ func (s *Session) executeSingleTool(ctx context.Context, tu ToolUseContent) Tool
 	}
 
 	if err != nil {
-		return ToolResultContent{ToolUseID: tu.ID, Content: fmt.Sprintf("error: %s", err.Error()), IsError: true}
+		return s.toolResult(ctx, tu, fmt.Sprintf("error: %s", err.Error()), true)
 	}
-	return ToolResultContent{ToolUseID: tu.ID, Content: output}
+	return s.toolResult(ctx, tu, output, false)
+}
+
+func (s *Session) toolResult(ctx context.Context, tu ToolUseContent, output string, isError bool) ToolResultContent {
+	s.emitEvent(ctx, AgentEvent{
+		Event:        EventToolCallFinished,
+		Turn:         s.currentTurn,
+		Tool:         tu.Name,
+		IsError:      isError,
+		InputChars:   len(tu.Input),
+		InputPreview: previewJSON(tu.Input, 240),
+		OutputChars:  len(output),
+	})
+	return ToolResultContent{ToolUseID: tu.ID, Content: output, IsError: isError}
+}
+
+func previewJSON(input json.RawMessage, max int) string {
+	if max <= 0 || len(input) == 0 {
+		return ""
+	}
+	preview := strings.TrimSpace(string(input))
+	if len(preview) > max {
+		preview = preview[:max] + "..."
+	}
+	return preview
+}
+
+func toolUseNames(toolUses []ToolUseContent) string {
+	if len(toolUses) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(toolUses))
+	for _, tu := range toolUses {
+		names = append(names, tu.Name)
+	}
+	return strings.Join(names, ",")
+}
+
+func previewToolUses(toolUses []ToolUseContent, max int) string {
+	if len(toolUses) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(toolUses))
+	for _, tu := range toolUses {
+		part := tu.Name + ":" + previewJSON(tu.Input, max)
+		parts = append(parts, part)
+	}
+	preview := strings.Join(parts, " | ")
+	if max > 0 && len(preview) > max {
+		return preview[:max] + "..."
+	}
+	return preview
 }
 
 // executeToolWithRetry runs tool.Execute, optionally retrying on transient errors.
@@ -379,6 +602,13 @@ func (s *Session) Messages() []Message {
 // ClearMemory resets the session's conversation history.
 func (s *Session) ClearMemory() {
 	s.memory.Clear()
+}
+
+// SetSystemSuffix sets a per-session suffix appended to the agent's system prompt.
+// This allows different sessions sharing the same Agent to have distinct system contexts
+// (e.g., group chat persona + memory context).
+func (s *Session) SetSystemSuffix(suffix string) {
+	s.systemSuffix = suffix
 }
 
 // activateSkill adds a skill to the session's active list.
@@ -461,7 +691,7 @@ func (s *Session) RunStream(ctx context.Context, input string) (<-chan StreamEve
 				return
 			}
 
-			results := s.executeTools(ctx, toolUses)
+			results := s.executeTools(ctx, toolUses, turn+1)
 
 			// Update exploration budget
 			if s.explorationBudget != nil {
