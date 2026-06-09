@@ -50,13 +50,17 @@ func EditFile() cc.Tool {
 			count := strings.Count(content, input.OldString)
 
 			if count == 0 {
-				// Try whitespace-normalized fallback before giving up
-				if start, end, ok := findNormalizedMatch(content, input.OldString); ok {
-					newContent := content[:start] + input.NewString + content[end:]
-					if err := os.WriteFile(input.Path, []byte(newContent), 0644); err != nil {
-						return "", fmt.Errorf("write file %s: %w", input.Path, err)
+				// Try whitespace-normalized fallback for single-line replacements.
+				// Multi-line fuzzy replacement is too risky because it can match
+				// prose/docstrings that merely contain similar tokens.
+				if !strings.Contains(input.OldString, "\n") {
+					if start, end, ok := findNormalizedMatch(content, input.OldString); ok {
+						newContent := content[:start] + input.NewString + content[end:]
+						if err := os.WriteFile(input.Path, []byte(newContent), 0644); err != nil {
+							return "", fmt.Errorf("write file %s: %w", input.Path, err)
+						}
+						return fmt.Sprintf("Replaced in %s via whitespace-normalized match (%d bytes → %d bytes). No need to re-read the file to verify.", input.Path, len(content), len(newContent)), nil
 					}
-					return fmt.Sprintf("Replaced in %s via whitespace-normalized match (%d bytes → %d bytes). No need to re-read the file to verify.", input.Path, len(content), len(newContent)), nil
 				}
 				// Help the model by showing nearby content
 				hint := findSimilarContent(content, input.OldString)
@@ -265,7 +269,7 @@ func findSimilarContent(content, oldString string) string {
 		hint.WriteString(fmt.Sprintf("%s%4d: %s\n", marker, i+1, lines[i]))
 	}
 
-	hint.WriteString("\nTip: Use read_file to get the exact content, then copy-paste as old_string. If you are adding a new method or mapping and already know the line number, use insert_after_line or insert_before_line instead of replacing a large block.")
+	hint.WriteString("\nNext step: retry edit_file using the Actual content above as the exact old_string, or use insert_after_line/insert_before_line with the shown line numbers. Do not keep rereading the same region unless the Actual content is insufficient.")
 
 	return hint.String()
 }

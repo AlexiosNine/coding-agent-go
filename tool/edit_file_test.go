@@ -96,6 +96,27 @@ func TestFindNormalizedMatch(t *testing.T) {
 	}
 }
 
+func TestEditFile_DoesNotFuzzyReplaceMultilineOldString(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "test.py")
+	original := "doc mentions if x:\n    return 1\n\nif x:\n    return 2\n"
+	os.WriteFile(f, []byte(original), 0644)
+
+	tool := EditFile()
+	_, err := tool.Execute(nil, mustJSON(editFileInput{
+		Path:      f,
+		OldString: "if x:\n return 2",
+		NewString: "if x:\n    return 3",
+	}))
+	if err == nil {
+		t.Fatal("expected multiline fuzzy replacement to be rejected")
+	}
+	data, _ := os.ReadFile(f)
+	if string(data) != original {
+		t.Fatalf("file should not be modified by multiline fuzzy replacement:\n%s", data)
+	}
+}
+
 func TestEditFile_ExactMatch(t *testing.T) {
 	dir := t.TempDir()
 	f := filepath.Join(dir, "test.go")
@@ -127,11 +148,11 @@ func TestEditFile_NormalizedMatch(t *testing.T) {
 	os.WriteFile(f, []byte("func foo() {\n\treturn 1\n}\n"), 0644)
 
 	tool := EditFile()
-	// old_string uses spaces instead of tabs
+	// old_string uses spaces instead of tabs on a single line
 	out, err := tool.Execute(nil, mustJSON(editFileInput{
 		Path:      f,
-		OldString: "func foo() {\n  return 1\n}",
-		NewString: "func bar() {\n\treturn 2\n}",
+		OldString: "return 1",
+		NewString: "return 2",
 	}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -142,7 +163,7 @@ func TestEditFile_NormalizedMatch(t *testing.T) {
 
 	data, _ := os.ReadFile(f)
 	content := string(data)
-	if content != "func bar() {\n\treturn 2\n}\n" {
+	if content != "func foo() {\n\treturn 2\n}\n" {
 		t.Errorf("file content = %q", content)
 	}
 }
@@ -193,6 +214,9 @@ func TestFindSimilarContent_MultiLine(t *testing.T) {
 	// Should find partial match near line 3
 	if !strings.Contains(hint, "partial match") {
 		t.Errorf("hint should mention partial match: %s", hint)
+	}
+	if !strings.Contains(hint, "retry edit_file") {
+		t.Errorf("hint should tell the model to retry edit_file: %s", hint)
 	}
 }
 

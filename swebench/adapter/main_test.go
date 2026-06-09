@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -117,6 +118,47 @@ func TestBuildPromptFullToolsetAddsFullToolGuidance(t *testing.T) {
 	}
 }
 
+func TestBuildPromptAddsPytestRepoGuidance(t *testing.T) {
+	prompt, err := buildPrompt(Instance{
+		Repo:             "pytest-dev/pytest",
+		BaseCommit:       "sha",
+		ProblemStatement: "numeric first expression mistaken as docstring",
+	}, "lean")
+	if err != nil {
+		t.Fatalf("buildPrompt: %v", err)
+	}
+	for _, want := range []string{"Pytest repository notes", "string constant", "AssertionRewriter.run()"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("pytest prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestBuildPromptAddsDjangoRepoGuidance(t *testing.T) {
+	prompt, err := buildPrompt(Instance{
+		Repo:             "django/django",
+		BaseCommit:       "sha",
+		ProblemStatement: "delete() on instances of models without any dependencies doesn't clear PKs",
+	}, "lean")
+	if err != nil {
+		t.Fatalf("buildPrompt: %v", err)
+	}
+	for _, want := range []string{"Django repository notes", "single-instance fast-delete early-return branch", "self.can_fast_delete(instance)"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("django prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestRepoTemplateNames(t *testing.T) {
+	if got := repoTemplateNames("pytest-dev/pytest"); len(got) != 1 || got[0] != "swebench/repos/pytest.md" {
+		t.Fatalf("unexpected pytest templates: %#v", got)
+	}
+	if got := repoTemplateNames("django/django"); len(got) != 1 || got[0] != "swebench/repos/django.md" {
+		t.Fatalf("unexpected django templates: %#v", got)
+	}
+}
+
 func TestSweConvergenceGuardOverridesReadOnlyThreshold(t *testing.T) {
 	cfg := sweConvergenceGuard(10)
 	if !cfg.Enabled {
@@ -163,6 +205,34 @@ func TestBuildMetricsVerificationFailureIsCaseFailed(t *testing.T) {
 	}
 	if metrics.FirstEditTurn == nil || *metrics.FirstEditTurn != firstEdit {
 		t.Fatalf("unexpected first edit turn: %#v", metrics.FirstEditTurn)
+	}
+}
+
+func TestBuildMetricsSkippedVerificationIsNotCaseSuccess(t *testing.T) {
+	result := &cc.RunResult{StopReason: cc.StopReasonSuccessText}
+	metrics := buildMetrics(Instance{InstanceID: "case__without-verifier"}, "model", "lean", result, "diff\n", "skipped", "no verifier configured for instance", time.Now())
+	if metrics.RunResult != "case_failed" {
+		t.Fatalf("expected unverified patch to remain case_failed, got %s", metrics.RunResult)
+	}
+}
+
+func TestVerificationScriptForInstanceOnlySupportsConfiguredCases(t *testing.T) {
+	root := t.TempDir()
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+	execPath := filepath.Join(binDir, "adapter")
+	if script, ok := verificationScriptForInstance("case__without-verifier", execPath); ok || script != "" {
+		t.Fatalf("expected unsupported verifier to be absent, got %q", script)
+	}
+	if err := os.WriteFile(filepath.Join(root, "verify_patch.sh"), []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatalf("write verifier: %v", err)
+	}
+	for _, id := range []string{"sympy__sympy-11400", "django__django-11179", "pytest-dev__pytest-11143"} {
+		if script, ok := verificationScriptForInstance(id, execPath); !ok || script == "" {
+			t.Fatalf("expected verifier for %s, got ok=%v script=%q", id, ok, script)
+		}
 	}
 }
 

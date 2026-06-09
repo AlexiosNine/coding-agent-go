@@ -297,8 +297,7 @@ func runAgent(instance Instance) (string, error) {
 	verifyStatus := "skipped"
 	verifyError := ""
 	execPath, _ := os.Executable()
-	verifyScript := filepath.Join(filepath.Dir(execPath), "..", "verify_patch.sh")
-	if _, err := os.Stat(verifyScript); err == nil {
+	if verifyScript, ok := verificationScriptForInstance(instance.InstanceID, execPath); ok {
 		log("=== Running patch verification ===")
 		patchDir := filepath.Join(workspaceRoot, "patches")
 		if err := os.MkdirAll(patchDir, 0755); err != nil {
@@ -309,7 +308,7 @@ func runAgent(instance Instance) (string, error) {
 
 		verifyCmd := exec.Command("bash", verifyScript, patchFile)
 		verifyCmd.Dir = workDir
-		verifyCmd.Env = append(os.Environ(), "SWE_REPO_PATH="+workDir)
+		verifyCmd.Env = append(os.Environ(), "SWE_REPO_PATH="+workDir, "SWE_INSTANCE_ID="+instance.InstanceID)
 		verifyOutput, verifyErr := verifyCmd.CombinedOutput()
 		log("Verify output:\n%s", string(verifyOutput))
 		if verifyErr != nil {
@@ -320,10 +319,26 @@ func runAgent(instance Instance) (string, error) {
 			verifyStatus = "passed"
 			log("Patch verification PASSED")
 		}
+	} else {
+		verifyError = "no verifier configured for instance"
+		log("Patch verification SKIPPED: %s", verifyError)
 	}
 	writeCaseArtifacts(runOutputDir, buildMetrics(instance, model, toolset, result, patch, verifyStatus, verifyError, startedAt))
 
 	return patch, nil
+}
+
+func verificationScriptForInstance(instanceID, execPath string) (string, bool) {
+	switch instanceID {
+	case "sympy__sympy-11400", "django__django-11179", "pytest-dev__pytest-11143":
+	default:
+		return "", false
+	}
+	verifyScript := filepath.Join(filepath.Dir(execPath), "..", "verify_patch.sh")
+	if _, err := os.Stat(verifyScript); err != nil {
+		return "", false
+	}
+	return verifyScript, true
 }
 
 func formatHints(hints string) string {
@@ -364,7 +379,7 @@ func buildMetrics(instance Instance, model, toolset string, result *cc.RunResult
 			metrics.RunResult = "stopped_by_guard"
 		}
 	}
-	if patch != "" && (verifyStatus == "passed" || verifyStatus == "skipped") {
+	if patch != "" && verifyStatus == "passed" {
 		metrics.RunResult = "case_success"
 	}
 	if verifyStatus == "failed" {
@@ -498,6 +513,7 @@ func buildPrompt(instance Instance, toolset string) (string, error) {
 		"core/tool_calling.md",
 	}
 	names = append(names, toolTemplateNames(toolset)...)
+	names = append(names, repoTemplateNames(instance.Repo)...)
 	names = append(names, "swebench/rules.md")
 
 	return registry.RenderMany(names, map[string]string{
@@ -506,6 +522,17 @@ func buildPrompt(instance Instance, toolset string) (string, error) {
 		"problem_statement": strings.TrimSpace(instance.ProblemStatement),
 		"hints_block":       formatHints(instance.HintsText),
 	})
+}
+
+func repoTemplateNames(repo string) []string {
+	switch strings.ToLower(strings.TrimSpace(repo)) {
+	case "pytest-dev/pytest":
+		return []string{"swebench/repos/pytest.md"}
+	case "django/django":
+		return []string{"swebench/repos/django.md"}
+	default:
+		return nil
+	}
 }
 
 func defaultTemplatesRoot() (string, error) {

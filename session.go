@@ -16,26 +16,29 @@ import (
 // Session holds the state for a single conversation.
 // Create via Agent.NewSession().
 type Session struct {
-	agent             *Agent
-	memory            Memory
-	outputBuffer      *OutputBuffer
-	dedup             *MessageDeduplicator
-	readTracker       *ReadTracker       // legacy path (when explorationBudget is nil)
-	explorationBudget *ExplorationBudget // unified tracker; nil if not configured
-	summarizer        *ToolResultSummarizer
-	factCache         *SessionFactCache
-	skillRegistry     *SkillRegistry
-	skillTool         Tool         // use_skill tool instance
-	activeSkills      []string     // session-local active skill names
-	activeSkillsMu    sync.RWMutex // protects activeSkills
-	maxActiveSkills   int          // max concurrent active skills (default 3)
-	systemSuffix      string       // appended to agent.system on every LLM call; survives compression
-	runID             string
-	metrics           RunMetrics
-	guardTracker      *ReadTracker
-	readOnlyTurns     int
-	editSucceeded     bool
-	currentTurn       int
+	agent              *Agent
+	memory             Memory
+	outputBuffer       *OutputBuffer
+	dedup              *MessageDeduplicator
+	readTracker        *ReadTracker       // legacy path (when explorationBudget is nil)
+	explorationBudget  *ExplorationBudget // unified tracker; nil if not configured
+	summarizer         *ToolResultSummarizer
+	factCache          *SessionFactCache
+	skillRegistry      *SkillRegistry
+	skillTool          Tool         // use_skill tool instance
+	activeSkills       []string     // session-local active skill names
+	activeSkillsMu     sync.RWMutex // protects activeSkills
+	maxActiveSkills    int          // max concurrent active skills (default 3)
+	systemSuffix       string       // appended to agent.system on every LLM call; survives compression
+	runID              string
+	metrics            RunMetrics
+	guardTracker       *ReadTracker
+	readOnlyTurns      int
+	editSucceeded      bool
+	editRecoveryReads  int
+	repeatedReadWarned bool
+	guardNudge         string
+	currentTurn        int
 }
 
 func (s *Session) emitEvent(ctx context.Context, event AgentEvent) {
@@ -99,6 +102,9 @@ func (s *Session) guardBeforeTools(toolUses []ToolUseContent) string {
 		s.metrics.ReadOnlyAfterEditBlocks++
 		return "read_only_after_successful_edit"
 	}
+	if s.editRecoveryReads > 0 && hasReadOnly {
+		return ""
+	}
 	if cfg.StopOnBudgetExhausted && s.explorationBudget != nil && s.explorationBudget.ActiveNudge() != "" && hasReadOnly {
 		return "exploration_budget_exhausted"
 	}
@@ -107,6 +113,11 @@ func (s *Session) guardBeforeTools(toolUses []ToolUseContent) string {
 	}
 	if cfg.StopOnRepeatedRead && s.guardTracker != nil {
 		if nudge := s.guardTracker.Track(toolUses); nudge != "" {
+			if !s.repeatedReadWarned {
+				s.repeatedReadWarned = true
+				s.guardNudge = nudge + " Your next tool call should be edit_file using the current context. Do not read the same region again."
+				return ""
+			}
 			return "repeated_read"
 		}
 	}
@@ -115,6 +126,7 @@ func (s *Session) guardBeforeTools(toolUses []ToolUseContent) string {
 
 func (s *Session) noteToolResults(toolUses []ToolUseContent, results []ToolResultContent) {
 	successfulMutation := false
+	failedEdit := false
 	for i, tu := range toolUses {
 		if isMutatingToolUse(tu) && i < len(results) && !results[i].IsError {
 			successfulMutation = true
@@ -122,11 +134,22 @@ func (s *Session) noteToolResults(toolUses []ToolUseContent, results []ToolResul
 				s.metrics.FirstEditTurn = s.currentTurn
 			}
 		}
+		if tu.Name == "edit_file" && i < len(results) && results[i].IsError {
+			failedEdit = true
+		}
 	}
 	if successfulMutation {
 		s.editSucceeded = true
+		s.editRecoveryReads = 0
+		s.repeatedReadWarned = false
+		s.guardNudge = ""
 		s.readOnlyTurns = 0
 		return
+	}
+	if failedEdit {
+		// A failed edit_file often returns exact nearby lines. Allow one
+		// recovery read without treating it as ordinary repeated exploration.
+		s.editRecoveryReads = 1
 	}
 	allReadOnly := len(toolUses) > 0
 	for _, tu := range toolUses {
@@ -137,6 +160,9 @@ func (s *Session) noteToolResults(toolUses []ToolUseContent, results []ToolResul
 	}
 	if allReadOnly {
 		s.readOnlyTurns++
+		if s.editRecoveryReads > 0 {
+			s.editRecoveryReads--
+		}
 	} else {
 		s.readOnlyTurns = 0
 	}
@@ -368,6 +394,9 @@ func (s *Session) step(ctx context.Context) (*ChatResponse, error) {
 		if nudge := s.explorationBudget.ActiveNudge(); nudge != "" {
 			system += "\n\n" + nudge
 		}
+	}
+	if s.guardNudge != "" {
+		system += "\n\n" + s.guardNudge
 	}
 
 	messages := s.memory.Messages()

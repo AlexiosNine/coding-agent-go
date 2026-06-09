@@ -1,13 +1,16 @@
 #!/bin/bash
-# SWE-bench Patch Verification for sympy__sympy-11400
-# Validates that ccode(sinc(x)) produces valid C code after patching
+# SWE-bench Patch Verification for supported local golden cases.
 set -e
 
 REPO_PATH="${SWE_REPO_PATH:-/tmp/swebench/sympy__sympy-11400}"
 PATCH_FILE="${1:-/tmp/test_patch.diff}"
+INSTANCE_ID="${SWE_INSTANCE_ID:-sympy__sympy-11400}"
+if [ -n "$PATCH_FILE" ]; then
+    PATCH_FILE="$(cd "$(dirname "$PATCH_FILE")" && pwd)/$(basename "$PATCH_FILE")"
+fi
 
 echo "=== SWE-bench Patch Verification ==="
-echo "Instance: sympy__sympy-11400"
+echo "Instance: $INSTANCE_ID"
 echo ""
 
 # Step 1: Check patch file
@@ -36,11 +39,12 @@ fi
 git apply "$PATCH_FILE"
 echo "[3/4] Patch applied"
 
-# Step 3: Run verification
 echo "[4/4] Running tests..."
 PYTHON=$(command -v python3.13 || command -v python3.11 || command -v python3.10 || command -v python3)
 
-$PYTHON -W ignore::SyntaxWarning -c "
+case "$INSTANCE_ID" in
+  sympy__sympy-11400)
+    $PYTHON -W ignore::SyntaxWarning -c "
 import collections, collections.abc
 for attr in ['Mapping', 'MutableMapping', 'Iterable', 'Callable', 'Iterator', 'Sequence', 'MutableSequence', 'Set', 'MutableSet']:
     if not hasattr(collections, attr) and hasattr(collections.abc, attr):
@@ -87,12 +91,136 @@ print('  PASS')
 print()
 print('=== ALL 5 TESTS PASSED ===')
 "
+    ;;
+  django__django-11179)
+    $PYTHON - <<'PY'
+import os
+import ast
 
-TEST_EXIT=$?
+repo = os.environ["SWE_REPO_PATH"]
+target = os.path.join(repo, "django", "db", "models", "deletion.py")
+with open(target, "r", encoding="utf-8") as f:
+    tree = ast.parse(f.read(), filename=target)
+
+
+def dotted_name(node):
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        base = dotted_name(node.value)
+        return f"{base}.{node.attr}" if base else node.attr
+    return ""
+
+
+def is_can_fast_delete_call(node):
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "can_fast_delete"
+        and len(node.args) == 1
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id == "instance"
+    )
+
+
+def is_fast_delete_query(node):
+    if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
+        return False
+    call_target = node.value.func
+    delete_query = call_target.value if isinstance(call_target, ast.Attribute) else None
+    return (
+        any(isinstance(target, ast.Name) and target.id == "count" for target in node.targets)
+        and isinstance(call_target, ast.Attribute)
+        and call_target.attr == "delete_batch"
+        and isinstance(delete_query, ast.Call)
+        and dotted_name(delete_query.func) == "sql.DeleteQuery"
+        and len(delete_query.args) == 1
+        and isinstance(delete_query.args[0], ast.Name)
+        and delete_query.args[0].id == "model"
+    )
+
+
+def is_pk_clear(node):
+    if not isinstance(node, ast.Expr) or not isinstance(node.value, ast.Call):
+        return False
+    call = node.value
+    return (
+        isinstance(call.func, ast.Name)
+        and call.func.id == "setattr"
+        and len(call.args) == 3
+        and isinstance(call.args[0], ast.Name)
+        and call.args[0].id == "instance"
+        and dotted_name(call.args[1]) == "model._meta.pk.attname"
+        and isinstance(call.args[2], ast.Constant)
+        and call.args[2].value is None
+    )
+
+
+def has_fast_delete_pk_clear():
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or node.name != "delete":
+            continue
+        for branch in ast.walk(node):
+            if not isinstance(branch, ast.If) or not is_can_fast_delete_call(branch.test):
+                continue
+            body = branch.body
+            for idx, stmt in enumerate(body):
+                if isinstance(stmt, ast.Return):
+                    before_return = body[:idx]
+                    has_delete = any(
+                        isinstance(inner, ast.With)
+                        and any(is_fast_delete_query(with_stmt) for with_stmt in inner.body)
+                        for inner in before_return
+                    )
+                    has_clear = any(is_pk_clear(prev) for prev in before_return)
+                    if has_delete and has_clear:
+                        return True
+    return False
+
+
+assert has_fast_delete_pk_clear(), (
+    "Collector.delete() fast-delete branch must clear the instance primary key "
+    "with setattr(instance, model._meta.pk.attname, None) before returning"
+)
+print("=== DJANGO FAST DELETE PK STATIC CHECK PASSED ===")
+PY
+    ;;
+  pytest-dev__pytest-11143)
+    $PYTHON - <<'PY'
+import ast
+import os
+import sys
+
+repo = os.environ["SWE_REPO_PATH"]
+sys.path.insert(0, repo)
+os.chdir(repo)
+
+from _pytest.assertion.rewrite import AssertionRewriter
+
+source = "1\nassert 1 == 1\n"
+mod = ast.parse(source)
+rewriter = AssertionRewriter("sample.py", None, source.encode())
+rewriter.run(mod)
+
+imports = [
+    node for node in mod.body
+    if isinstance(node, ast.Import) and any(alias.asname == "@py_builtins" for alias in node.names)
+]
+assert imports, "rewrite imports were not inserted after numeric leading expression"
+assert any(
+    isinstance(node, ast.Expr)
+    and isinstance(node.value, ast.Constant)
+    and node.value.value == 1
+    for node in mod.body
+), "numeric leading expression should remain in module body"
+print("=== PYTEST REWRITE TEST PASSED ===")
+PY
+    ;;
+  *)
+    echo "FAIL: no verifier configured for $INSTANCE_ID"
+    exit 1
+    ;;
+esac
+
 echo ""
-if [ $TEST_EXIT -eq 0 ]; then
-    echo "RESULT: PASS - Patch correctly fixes ccode(sinc(x))"
-else
-    echo "RESULT: FAIL"
-fi
-exit $TEST_EXIT
+echo "RESULT: PASS"
